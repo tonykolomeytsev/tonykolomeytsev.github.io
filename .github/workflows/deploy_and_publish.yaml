@@ -68,12 +68,12 @@ jobs:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           release_name: ${{ steps.get_version.outputs.VERSION }}
 
-      - name: Download Linux tarball
+      - name: Download zip
         uses: actions/download-artifact@v1
         with:
-          name: linux
+          name: artifact
       
-      - name: Release Linux tarball
+      - name: Release zip
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
