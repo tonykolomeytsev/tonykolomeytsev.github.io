@@ -97,3 +97,5 @@ jobs:
           unzip "$PKG_NAME"
           mv ./dist/tonykolomeytsev-github-io /usr/local/bin/tkgio
           tkgio
+          ls -lah
+          cat index.html
