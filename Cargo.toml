@@ -1,0 +1,11 @@
+[package]
+name = "tonykolomeytsev-github-io"
+version = "0.1.0"
+edition = "2021"
+authors = [ "Anton Kolomeytsev <tonykolomeytsev@gmail.com>" ]
+description = "Personal blog generator"
+homepage = "tonykolomeytsev.github.io"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
