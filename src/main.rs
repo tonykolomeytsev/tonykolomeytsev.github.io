@@ -1,3 +1,3 @@
 fn main() {
-    println!("Hello, world!");
+    std::fs::write("index.html", include_str!("../res/index.html")).unwrap();
 }

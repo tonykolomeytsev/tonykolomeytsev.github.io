@@ -1,0 +1,81 @@
+
+on:
+  push:
+    branches: [master]
+
+env:
+  RELEASE_BIN: tonykolomeytsev-github-io
+  GITHUB_REF: "${{ github.ref }}"
+
+jobs:
+  build:
+    name: Build Rust binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Query version number
+        id: get_version
+        shell: bash
+        run: |
+          echo "using version tag ${GITHUB_REF:10}"
+          echo ::set-output name=version::"${GITHUB_REF:10}"
+
+      - name: Install Rust
+        run: |
+          rustup update --no-self-update
+      
+      - name: Build
+        run: |
+          cargo build --release
+
+      - name: Create tarball
+        if: matrix.build == 'linux'
+        run: |
+          mkdir ./dist
+          mkdir ./artifacts
+          mv ./target/release/${{ env.RELEASE_BIN }} ./dist/${{ env.RELEASE_BIN }}
+          7z a -tzip ./artifacts/${{ env.RELEASE_BIN }}.zip ./dist      
+
+      - name: Upload Zip
+        uses: actions/upload-artifact@v1
+        with:
+          name: ${{ matrix.build }}
+          path: ./artifacts
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query version number
+        id: get_version
+        shell: bash
+        run: |
+          echo "using version tag ${GITHUB_REF:10}"
+          echo ::set-output name=version::"${GITHUB_REF:10}"
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          release_name: ${{ steps.get_version.outputs.VERSION }}
+
+      - name: Download Linux tarball
+        uses: actions/download-artifact@v1
+        with:
+          name: linux
+      
+      - name: Release Linux tarball
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./
+          asset_content_type: application/zip
+          asset_name: ${{ env.RELEASE_BIN }}.zip
