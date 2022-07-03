@@ -1,7 +1,9 @@
-
 on:
   push:
-    branches: [master]
+    tags:
+      - "v*" # Run when tag matches v*, i.e. v1.0, v20.15.10
+
+name: Generator release
 
 env:
   RELEASE_BIN: tonykolomeytsev-github-io
@@ -30,7 +32,7 @@ jobs:
         run: |
           cargo build --release
 
-      - name: Create tarball
+      - name: Create zip
         if: matrix.build == 'linux'
         run: |
           mkdir ./dist
@@ -38,10 +40,10 @@ jobs:
           mv ./target/release/${{ env.RELEASE_BIN }} ./dist/${{ env.RELEASE_BIN }}
           7z a -tzip ./artifacts/${{ env.RELEASE_BIN }}.zip ./dist      
 
-      - name: Upload Zip
+      - name: Upload zip
         uses: actions/upload-artifact@v1
         with:
-          name: ${{ matrix.build }}
+          name: artifacts
           path: ./artifacts
 
   release:
