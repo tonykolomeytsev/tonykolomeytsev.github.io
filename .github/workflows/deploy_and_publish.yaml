@@ -38,7 +38,9 @@ jobs:
           mkdir ./dist
           mkdir ./artifacts
           mv ./target/release/${{ env.RELEASE_BIN }} ./dist/${{ env.RELEASE_BIN }}
-          7z a -tzip ./artifacts/${{ env.RELEASE_BIN }}.zip ./dist      
+          7z a -tzip ./artifacts/${{ env.RELEASE_BIN }}.zip ./dist
+          ls -lah
+          pwd
 
       - name: Upload zip
         uses: actions/upload-artifact@v1
