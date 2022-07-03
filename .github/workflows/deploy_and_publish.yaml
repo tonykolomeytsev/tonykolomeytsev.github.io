@@ -94,6 +94,6 @@ jobs:
         run: |
           export PKG_NAME="default.artifacts.tonykolomeytsev-github-io.zip"
           curl -LJO "https://github.com/tonykolomeytsev/tonykolomeytsev.github.io/releases/latest/download/$PKG_NAME"
-          tar -xzf "$PKG_NAME"
+          unzip "$PKG_NAME"
           mv ./dist/tonykolomeytsev-github-io /usr/local/bin/tkgio
           tkgio
