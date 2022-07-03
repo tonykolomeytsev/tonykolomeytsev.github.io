@@ -71,7 +71,7 @@ jobs:
       - name: Download zip
         uses: actions/download-artifact@v1
         with:
-          name: artifact
+          name: artifacts
       
       - name: Release zip
         uses: actions/upload-release-asset@v1
