@@ -82,3 +82,18 @@ jobs:
           asset_path: ./artifacts/${{ env.RELEASE_BIN }}.zip
           asset_name: ./artifacts/${{ env.RELEASE_BIN }}.zip
           asset_content_type: application/zip
+    
+    generate:
+      name: Generate all pages
+      needs: release
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v2
+
+        - name: Install latest generator binary
+          run: |
+            export PKG_NAME="default.artifacts.tonykolomeytsev-github-io.zip"
+            curl -LJO "https://github.com/tonykolomeytsev/tonykolomeytsev.github.io/releases/latest/download/$PKG_NAME"
+            tar -xzf "$PKG_NAME"
+            mv ./dist/tonykolomeytsev-github-io /usr/local/bin/tkgio
+            tkgio
