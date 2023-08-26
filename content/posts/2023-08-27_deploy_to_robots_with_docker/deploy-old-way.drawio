@@ -1,0 +1,31 @@
+<mxfile host="app.diagrams.net" modified="2023-08-26T16:47:50.867Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36" etag="jaQqdXrTcsI9t-CAL3Uz" version="21.6.9" type="device">
+  <diagram name="Страница — 1" id="SYYfTs1Zjv-tDnI6AenH">
+    <mxGraphModel dx="789" dy="473" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="hVrodvJch2NNDecWTyNO-2" value="Laptop" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#828282;" vertex="1" parent="1">
+          <mxGeometry x="120" y="200" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="hVrodvJch2NNDecWTyNO-3" value="Robot" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#828282;" vertex="1" parent="1">
+          <mxGeometry x="320" y="200" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="hVrodvJch2NNDecWTyNO-4" value="GitLab" style="ellipse;shape=cloud;whiteSpace=wrap;html=1;fontSize=14;strokeColor=#828282;" vertex="1" parent="1">
+          <mxGeometry x="200" y="50" width="150" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="hVrodvJch2NNDecWTyNO-5" value="" style="endArrow=classic;startArrow=classic;html=1;rounded=0;entryX=0.31;entryY=0.8;entryDx=0;entryDy=0;entryPerimeter=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;strokeColor=#828282;" edge="1" parent="1" source="hVrodvJch2NNDecWTyNO-2" target="hVrodvJch2NNDecWTyNO-4">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="170" y="180" as="sourcePoint" />
+            <mxPoint x="220" y="130" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="hVrodvJch2NNDecWTyNO-6" value="" style="endArrow=classic;startArrow=classic;html=1;rounded=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.8;entryY=0.8;entryDx=0;entryDy=0;entryPerimeter=0;strokeColor=#828282;" edge="1" parent="1" source="hVrodvJch2NNDecWTyNO-3" target="hVrodvJch2NNDecWTyNO-4">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="380" y="150" as="sourcePoint" />
+            <mxPoint x="430" y="100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
