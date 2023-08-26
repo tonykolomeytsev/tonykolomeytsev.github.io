@@ -38,7 +38,7 @@ navigation = [
 ]
 
 home_title = "Kekmech"
-home_content = "Андерграундный блог про технологии, с которыми я работаю, а также gauge метрики моей кукухи."
+home_content = "An underground blog about the technologies I work with, as well as the gauge metrics of my insanity."
 social_icons = [
     { url = "https://github.com/tonykolomeytsev", title = "GitHub", icon = "github" },
     { url = "https://t.me/kekmech", title = "Telegram", icon = "telegram" },
