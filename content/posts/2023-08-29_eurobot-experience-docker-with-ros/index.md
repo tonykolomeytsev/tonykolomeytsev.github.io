@@ -14,7 +14,7 @@ tags = ["docker", "ROS", "robotics", "eurobot", "skoltech", "practical case"]
 
 <center>
 
-![Eurobot Photo 1](eurobot-photo-1.png)
+![Eurobot Photo 1](eurobot-photo-1.jpg)
 
 </center>
 
@@ -683,6 +683,6 @@ environment:
 
 <center>
 
-![Eurobot Photo 2](eurobot-photo-2.png)
+![Eurobot Photo 2](eurobot-photo-2.jpg)
 
 </center>
