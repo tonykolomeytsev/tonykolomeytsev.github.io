@@ -99,8 +99,16 @@ ssh-keygen -t rsa
 - `user` — имя юзера в ОС робота. У нас в RESET имя юзера всегда было `nuc`.
 - `host` — IP-адрес робота в локальной сети, например `192.168.1.64`.
 
+Код для Linux/MacOS:
+
 ```bash
 ssh-copy-id user@host
+```
+
+[Код для Windows Powershell](https://chrisjhart.com/Windows-10-ssh-copy-id/) немного отличается:
+
+```powershell
+type $env:USERPROFILE\.ssh\id_rsa.pub | ssh user@host "cat >> .ssh/authorized_keys"
 ```
 
 ### Docker BuildKit
@@ -189,20 +197,13 @@ ssh -o ConnectTimeout=5 \
     "
 ```
 
+> На Windows нет `/dev/null`, зато [есть](https://stackoverflow.com/questions/67372030/how-to-write-to-a-null-device-file-on-windows-10-so-i-can-not-read-back-wh) `\\.\NUL`.
+
 Разбираем по порядку:
 1. Подключаемся по SSH к `$ROBOT_HOSTNAME`. Это как раз `user@host` из пункта про SSH-ключи — например `nuc@192.168.1.64`.
 1. Опцию `-o ConnectTimeout=5` вы и сами сможете нагуглить. 
 1. Опции `-o StrictHostKeyChecking=no` и `-o UserKnownHostsFile=/dev/null` нужны для [автоматического принятия RSA ключей](https://wiki.enchtex.info/practice/ssh_accept_host_key) клиентом SSH. Это сделано для удобства, чтобы вас никто не спрашивал "ДЕЙСТВИТЕЛЬНО ХОТИТЕ ПОДКЛЮЧИТЬСЯ?" и для того чтобы у вас не разрастался файл `known_hosts` при смене IP адресов роботов.
-1. После установки соединения выполняем команду:
-    ```bash
-    docker run -d \
-        -v /etc/docker-push-ssh/registry:/var/lib/registry \
-        --name registry \
-        --restart always \
-        -p 127.0.0.1:5000:5000 \
-        registry:2 || true
-    ```
-    Да, мы просто запускаем на роботе контейнер с Docker Registry. По-умолчанию Registry работает на порте 5000, при помощи биндинга `-p 127.0.0.1:5000:5000` мы делаем его доступным [только в локальной сети](https://brokkr.net/2022/03/29/publishing-docker-ports-to-127-0-0-1-instead-of-0-0-0-0/). 
+1. После установки соединения мы просто запускаем на роботе контейнер с Docker Registry. По-умолчанию Registry работает на порте 5000, при помощи биндинга `-p 127.0.0.1:5000:5000` мы делаем его доступным [только в локальной сети](https://brokkr.net/2022/03/29/publishing-docker-ports-to-127-0-0-1-instead-of-0-0-0-0/). 
     
     > Образ с Registry весит в районе 20 мегабайт и в режиме бездействия не потребляет фактически никаких ресурсов. Так что если он будет все время работать, ничего плохого не произойдет даже на слабых компах типа Raspberry 3B+. Кстати, вместо `|| true` можно придумать более элегантное решение.
 
@@ -226,6 +227,8 @@ ssh -N \
 1. Опция `-N` позволяет не запускать никакую команду.
 1. Опция `-L *:5000:localhost:5000` пробрасывает порты из сети нашего компьютера в локальную сеть робота. Таким образом нам будет доступен Docker Registry, запущенный на роботе.
 1. Сам запуск ssh блокирует терминал, поэтому используем `&` чтобы запустить процесс в фоне и сразу записываем ID процесса в файл `SSHPID` для того чтобы закрыть тоннель после деплоя.
+
+> На Windows, в PowerShell [до 7 версии](https://www.reddit.com/r/PowerShell/comments/105e4gc/how_to_run_a_process_in_background_in_powershell/), конструкция `& echo $! > SSHPID` работать не будет. В рамках туториала можно просто запустить ssh, после чего продолжить работу в новом терминале.
 
 ### Бонус: проверяем что все работает
 
