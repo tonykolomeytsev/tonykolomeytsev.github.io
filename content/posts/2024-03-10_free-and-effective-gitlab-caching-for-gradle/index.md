@@ -336,13 +336,14 @@ internal abstract class CraftyBuildCachePlugin @Inject constructor(
 ) : Plugin<Settings> {
 
     /**
-     * Позволяем отключать плагин флагом в gradle.properties:
-     * `crafty.build.cache.enabled=false`
+     * На CI можем включить плагин флагом в gradle.properties:
+     * `crafty.build.cache.enabled=true`.
+     * Для локальных билдов его функциональность нам не нужна
      */
     private val enabled: Provider<Boolean> = providers
         .gradleProperty("crafty.build.cache.enabled")
         .map { it.toBoolean() }
-        .orElse(true)
+        .orElse(false)
 
     override fun apply(target: Settings): Unit = with(target) {
         if (!enabled.get()) return@with
@@ -376,7 +377,86 @@ internal abstract class CraftyBuildCachePlugin @Inject constructor(
 
 ## Докручиваем базовое решение
 
-TODO
+### Переиспользуем билд кэш для генерации нового кэша
+
+Так как мы теперь знаем, какие кэш-ключики были использованы во время билда, мы можем спокойно дропать все остальные. Так мы в разы ускоряем прогон пайплайна для генерации кэша:
+
+![Intersection between old and new cache key sets](old-new-cache-intersection.png)
+
+На картинке все выглядит красиво, осталось это реализовать. Давайте допилим наш `CraftyBuildCacheService` функцией удаления неиспользованного билд-кэша:
+
+```kotlin
+internal class CraftyBuildCacheService(
+    private val configuration: CraftyBuildCacheConfig,
+    private val objects: ObjectFactory,
+) : BuildCacheService {
+    // код написанный ранее ...
+
+    override fun close() {
+        println("${storedCacheKeySet.size} cache keys collected.")
+        vacuumBuildCache()
+    }
+
+    private fun vacuumBuildCache() {
+        // Находим все кэш-ключи, которые не участвовали в текущем билде
+        val unusedBuildCacheKeys = iterateBuildCache { it !in storedCacheKeySet }
+        // Удаляем их и подсчитываем, сколько было удалено
+        val unusedRemovedCount = unusedBuildCacheKeys
+            .onEach { Files.delete(it.toPath()) }
+            .count()
+        println("$unusedRemovedCount unused cache keys deleted.")
+    }
+
+    private fun iterateBuildCache(selector: (String) -> Boolean): Array<out File> =
+        configuration.buildCacheDir
+            .listFiles { file -> selector(file.name) }
+            .orEmpty() 
+}
+```
+
+> Я тут использую `Files.delete(Path)` вместо `it.delete()`, потому что `Files.delete(Path)` выбросит исключение если не получится удалить файл. Так мы сразу узнаем что что-то пошло не так.
+
+Теперь мы можем немного поправить наш GitLab Yaml конфиг. Во-первых, добавить новый конфиг для кэша:
+
+```yaml
+# cache.yml
+
+.pull-push-build-cache:
+  - key: cache-build
+    policy: pull-push
+    unprotect: true
+    paths:
+      - .gradle/caches/build-cache-1/
+```
+
+Во-вторых использовать этот конфиг в джобе генерации кэша:
+
+```yaml
+...
+
+# Эта джоба запускается после вливания МРа
+cache build:
+  stage: post-check
+  extends: .base
+  script:
+    - ./gradlew :app:assembleDebug
+  cache:
+    - !reference [ .pull-push-wrapper-cache ]
+    - !reference [ .push-deps-cache ]
+    - !reference [ .pull-push-build-cache ]
+  rules:
+    - if: $CI_PIPELINE_SOURCE = "push" && $CI_COMMIT_BRANCH == "master"
+```
+
+#### А можно ли так же с кэшом зависимостей?
+
+Если можно, то я не знаю как это делать по ГОСТу. Зато есть лайфкек, называется "Перчатка Таноса". Работает следующим образом: используем `policy: pull-push` для кэша зависимостей; при этом на старте джобы удаляем 50% рандомных пакетов в `$GRADLE_USER_HOME/caches/modules-2/`. Отлично работающий на практике способ.
+
+<center>
+
+![Thanos Pepe meme](thanos-pepe-meme.jpeg)
+
+</center>
 
 ### Переиспользуем билд кэш MR-ов в пайплайнах MR-ов
 
