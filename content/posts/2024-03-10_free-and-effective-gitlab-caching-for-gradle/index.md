@@ -31,19 +31,23 @@ tags = ["gradle", "gitlab", "android", "docker"]
 
 > Генерируйте кэш в одних пайплайнах, переиспользуйте его в других.
 
-В первую очередь надо понять, что загрузка и сохранение кэша в GitLab, это не быстрый процесс. Чем больше весит кэш, тем дольше он упаковывается в архив и отгружается в облако. Даже Gradle Remote Build Cache не бесплатная штука, особенно если у вас проблемы с сетью на CI. Поэтому в базовой реализации не все пайплайны должны генерировать кэш.
+В первую очередь надо понять, что загрузка и сохранение кэша в GitLab, это не быстрый процесс. Чем больше весит кэш, тем дольше он упаковывается в архив и отгружается в облако. Даже Gradle Remote Build Cache не бесплатная штука, особенно если вы используете стандартный Remote Build Cache плагин и официальную Docker ноду. Поэтому в базовой реализации не все пайплайны должны генерировать кэш.
 
 Предлагаемая мною схема такая:
 - У проекта есть основная ветка, пусть она называется `master`. 
 - Есть `feature`-ветки, которые в конце своей жизни вливаются в `master`.
-- При вливании в `master` запускается пайп с джобой, генерирующей билд кэш. Если не хочется запускать при вливании, запускаем по расписанию.
-- Когда запускаются пайплайны на `feature`-ветках, они переиспользуют кэш сгенерированный на ветке `master`. Обычно пайплайны на `feature`-ветках состоят из джоб с проверками МР перед вливанием.
+- При вливании в `master` запускается пайп, генерирующей билд кэш. Если не хочется запускать при вливании, запускаем по расписанию.
+- Когда запускаются пайплайны на `feature`-ветках, они переиспользуют кэш сгенерированный на ветке `master`. 
+
+![Different pipeline purposes](different-pipeline-purposes.png)
 
 ### Разделение GitLab кэшей по предназначению
 
 > Кэшировать билд-кэш, зависимости и Gradle Wrapper нужно отдельными ключами
 
 В проекте чаще всего меняется код продукта, немного реже меняются зависимости, и еще реже меняется версия Gradle. Я считаю что кэш для этих сущностей должен быть отдельный. Суммарный вес архива с общим кэшом быстро превысит допустимые для отгрузки по s3 лимиты. К тому же джобы, которым нужны не все виды кэша, будут выполнятся быстрее если не будут грузить ничего лишнего.
+
+![Different types of Gradle cache](different-types-of-gradle-cache.png)
 
 Все что надо кэшировать на CI, Gradle хранит в директории `$GRADLE_USER_HOME`. Вы можете переопределить эту переменную окружения для джоб:
 
@@ -54,6 +58,15 @@ some job:
 ```
 
 Далее во всех примерах я буду считать что `$GRADLE_USER_HOME` именно такой.
+
+```shell
+$GRADLE_USER_HOME/
+├── caches/
+│   ├── build-cache-1/ <- Билд-кэш
+│   └── modules-2/ <- кэш зависимостей
+├── notifications/ <- мусор для wrapper
+└── wrapper/ <- дистрибутивы wrapper
+```
 
 ### Отдельный GitLab кэш для Gradle Wrapper
 
@@ -230,9 +243,11 @@ cache build:
     - if: $CI_PIPELINE_SOURCE = "push" && $CI_COMMIT_BRANCH == "master"
 ```
 
-На данном этапе сборка в прогонах МРа будет уже заметно ускорена, особенно если у вас многомодульный проект. Но как любят говорить айтишники, "тут есть точки роста".
+На данном этапе сборка в прогонах МРа будет уже заметно ускорена. Но как любят говорить соевые айтишники, "тут есть точки роста".
 
-Как можно заметить, джобе `cache build` не дается кэш от ее предыдущих запусков. То есть билд и закачка зависимостей в этой джобе происходит каждый раз с нуля. Все потому что Gradle самостоятельно не очищает неиспользуемый кэш и зависимости. Если для генерации нового кэша мы будем использовать результаты прошлых прогонов, то кэш будет разрастаться с огромной скоростью. Он быстро перевалит за критическую отметку в 5 гигабайт, после чего вы даже не сможете загрузить его в хранилище s3. Короче, это просто такой способ защититься от неконтролируемого роста GitLab кэша.
+![Build cache isn't reused](build-cache-isnt-reused.png)
+
+Можно заметить, джобе `cache build` не дается кэш от ее предыдущих запусков. То есть билд и закачка зависимостей в этой джобе происходит каждый раз с нуля. Все потому что Gradle самостоятельно не очищает неиспользуемый кэш и зависимости. Если для генерации нового кэша мы будем использовать результаты прошлых прогонов, то кэш будет разрастаться с огромной скоростью. Он быстро перевалит за критическую отметку в 5 гигабайт, после чего вы даже не сможете загрузить его в хранилище s3. Короче, это просто такой способ защититься от неконтролируемого роста GitLab кэша.
 
 С перезагрузкой зависимостей все не так критично, это происходит достаточно быстро. А вот полное отсутствие билд-кэша приводит к реально долгим прогонам. Настолько долгим, что стоит задуматься, а целесообразно ли генерить кэш при каждом вливании в `master`, или все-таки лучше делать это по расписанию?
 
@@ -240,22 +255,80 @@ cache build:
 
 ### Упс, купите Gradle Enterprise
 
-Нужный нам функционал уже есть в Gradle Enterprise, но за него просят деняк. Вручную посмотреть использованные кэш-ключи Gradle можно при помощи опции `--scan`. Проблема в том, Build Scan Plugin сделан таким образом, чтобы вы не могли с его помощью автоматизировать свой CI. Про то как сломать Gradle Enterprise плагин и заставить его сливать вам билд сканы я напишу отдельную заметку. Для текущей заметки нашел более простой способ решить проблему.
+Нужный нам функционал уже есть в Gradle Enterprise, но за него у вас могут попросить деняк. А если вы работаете в Богом хранимой, то вас еще могут попросить пойти нахуй. Вручную посмотреть использованные кэш-ключи Gradle можно при помощи опции `--scan`. Но автоматизировать сбор и парсинг этих данных на CI проблематично. Про то как сломать Gradle Enterprise плагин и заставить его делиться билд сканами я напишу отдельную заметку. Для текущей заметки нашел более простой способ решить проблему.
 
-### Gradle Enterprise идет нахуй
+<center>
 
-Бизнес-модель Gradle построена на ненависти к людям, мы такое осуждаем, поэтому деняк им не дадим. Давайте самостоятельно будем вытаскивать кэш-ключи на CI.
+![Pepe meme](pepe-meme.png)
+
+</center>
+
+Бизнес-модель Gradle построена на ненависти к людям, мы такое осуждаем, поэтому деняк им не дадим. Давайте без Enterprise версии будем вытаскивать кэш-ключи от билдов на CI.
 
 ## Вытаскиваем кэш-ключи
 
-Кэши в Gradle бывают двух типов, *local* и *remote*. Сохранением и извлечением билд кэша в Gradle занимается `BuildCacheService`. Если мы создадим свою реализацию такого сервиса, то сможем записать все использованные в текущем билде ключики. А потом конечно сможем очистить ту часть кэша, которая не была использована.
+Сохранением и извлечением билд кэша в Gradle занимаются `BuildCacheService`. Если мы создадим свою реализацию такого сервиса, то сможем записать все использованные в текущем билде ключики. А потом конечно сможем очистить ту часть кэша, которая не была использована.
 
+[Документация по BuildCacheService](https://docs.gradle.org/current/javadoc/org/gradle/caching/BuildCacheService.html) достаточно скудная, поэтому когда я разбирался в теме, подсматривал в исходники Gradle и в реализацию [Gradle Redis build cache](https://github.com/tehlers/gradle-redis-build-cache).
 
 ### Притворяемся Remote Build Cache
 
-Реализуем свой сервис, прикидывающийся сервисом для Remote Build Cache. Gradle будет давать нам ключи кэша для того чтобы мы их сохранили, но мы будем просто запоминать их.
+Реализуем свой сервис, прикидывающийся сервисом для Remote Build Cache. Gradle будет давать нам ключи кэша для того чтобы мы их сохранили, но мы будем просто запоминать их:
 
-Нужно создать convention плагин, который будет подключаться в `settings.gradle`:
+```kotlin
+internal class CraftyBuildCacheService(
+    private val configuration: CraftyBuildCacheConfig,
+    private val objects: ObjectFactory,
+) : BuildCacheService {
+
+    private val storedCacheKeySet: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    override fun load(key: BuildCacheKey, reader: BuildCacheEntryReader): Boolean {
+        storedCacheKeySet.add(key.displayName)
+        return false
+    }
+
+    override fun store(key: BuildCacheKey, writer: BuildCacheEntryWriter) {
+        storedCacheKeySet.add(key.displayName)
+    }
+
+    override fun close() {
+        println("${storedCacheKeySet.size} cache keys collected.")
+        // Делайте с этой инфой все что хотите :)))
+    }
+}
+```
+
+Класс для хранения и передачи настроек для сервиса тоже не сложный. `CraftyBuildCacheConfig` это просто аналог `extension` для `BuildCacheService`. Ребята из Gradle не могли сделать одинаково, поэтому разножопили по полной программе:
+
+```kotlin
+internal abstract class CraftyBuildCacheConfig : BuildCache {
+
+    // Значение по-умолчанию для того чтобы не делать nullability
+    var buildCacheDir: File = File("~/.gradle/caches/build-cache-1")
+}
+```
+
+Фабрика для создания сервиса:
+
+```kotlin
+internal class CraftyBuildCacheServiceFactory @Inject constructor(
+    private val objects: ObjectFactory,
+) : BuildCacheServiceFactory<CraftyBuildCacheConfig> {
+
+    override fun createBuildCacheService(
+        configuration: CraftyBuildCacheConfig,
+        describer: BuildCacheServiceFactory.Describer,
+    ): BuildCacheService {
+        describer
+            .type("crafty")
+            .config("gradle", "sucks")
+        return CraftyBuildCacheService(configuration, objects)
+    }
+}
+```
+
+Подключаем созданный нами сервис при помощи convention-плагина:
 
 ```kotlin
 internal abstract class CraftyBuildCachePlugin @Inject constructor(
@@ -293,69 +366,13 @@ internal abstract class CraftyBuildCachePlugin @Inject constructor(
 }
 ```
 
-Класс `CraftyBuildCacheConfig` это просто аналог `extension` для `BuildCacheService`. Ребята из Gradle не могли сделать одинаково, поэтому разножопили по полной программе:
+Подключаем этот convention-плагин в `settings.gradle` файле вашего проекта. На этом собственно самая сложная часть закончилась.
 
-```kotlin
-internal abstract class CraftyBuildCacheConfig : BuildCache {
-
-    /**
-     * Значение по-умолчанию тут только для того 
-     * чтобы не делать nullability
-     */
-    var buildCacheDir: File = File("~/.gradle/caches/build-cache-1")
-}
-```
-
-Фабрика для создания сервиса:
-
-```kotlin
-internal class CraftyBuildCacheServiceFactory @Inject constructor(
-    private val objects: ObjectFactory,
-) : BuildCacheServiceFactory<CraftyBuildCacheConfig> {
-
-    override fun createBuildCacheService(
-        configuration: CraftyBuildCacheConfig,
-        describer: BuildCacheServiceFactory.Describer,
-    ): BuildCacheService {
-        describer
-            .type("crafty")
-            .config("gradle", "sucks")
-        return CraftyBuildCacheService(configuration, objects)
-    }
-}
-```
-
-Ну и наконец-то сам сервис:
-
-```kotlin
-internal class CraftyBuildCacheService(
-    private val configuration: CraftyBuildCacheConfig,
-    private val objects: ObjectFactory,
-) : BuildCacheService {
-
-    private val storedCacheKeySet: MutableSet<String> = ConcurrentHashMap.newKeySet()
-
-    override fun load(key: BuildCacheKey, reader: BuildCacheEntryReader): Boolean {
-        storedCacheKeySet.add(key.displayName)
-        return false
-    }
-
-    override fun store(key: BuildCacheKey, writer: BuildCacheEntryWriter) {
-        storedCacheKeySet.add(key.displayName)
-    }
-
-    override fun close() {
-        println("${storedCacheKeySet.size} cache keys collected.")
-        // Делайте с этой инфой все что хотите :)))
-    }
-}
-```
-
-Метод `close()` вызывается один раз в конце билда. На момент его вызова у вас на руках есть `storedCacheKeySet` — список всех кэш-ключей, использованных в этом билде.
+Метод `CraftyBuildCacheService#close()` вызывается один раз в конце билда. На момент его вызова у вас на руках есть `storedCacheKeySet` — список всех кэш-ключей, использованных в этом билде.
 
 > Важно заметить, что этот способ на 100% работает только тогда, когда нет тасок UP-TO-DATE. Потому что если таска UP-TO-DATE, Gradle не ходит к `BuildCacheService` за ней, следовательно, мы о ней не узнаем. 
 >
-> На CI в чистых контейнерах это всегда будет работать. Локально при тестировании функционала это надо учитывать и вызывать `./gradlew clean`. Подробнее про [отличия UP-TO-DATE и FROM-CACHE](https://stackoverflow.com/questions/65101472/what-is-the-difference-between-from-cache-and-up-to-date-in-gradle).
+> На CI в чистых контейнерах это всегда будет работать. Локально при тестировании функционала это надо учитывать и вызывать `./gradlew clean` либо использовать `--rerun-tasks`. Подробнее про [отличия UP-TO-DATE и FROM-CACHE](https://stackoverflow.com/questions/65101472/what-is-the-difference-between-from-cache-and-up-to-date-in-gradle).
 
 ## Докручиваем базовое решение
 
