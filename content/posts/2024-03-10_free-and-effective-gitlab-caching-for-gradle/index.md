@@ -1,6 +1,6 @@
 +++
 title = "Gradle + GitLab: эффективный и бесплатный билд-кэш"
-date = "2024-03-10"
+date = "2024-07-27"
 draft = true
 
 [taxonomies]
@@ -267,113 +267,115 @@ cache build:
 
 ## Вытаскиваем кэш-ключи
 
-Сохранением и извлечением билд кэша в Gradle занимаются `BuildCacheService`. Если мы создадим свою реализацию такого сервиса, то сможем записать все использованные в текущем билде ключики. А потом конечно сможем очистить ту часть кэша, которая не была использована.
+Для того чтобы получить доступ к кэш-ключам, нам придется использовать gradle internal api. Хорошее объяснение того, что мы дальше делаем, есть в [докладе от Тинькофф на Mobius Spring 2024](https://mobiusconf.com/en/archive/2024%20Spring/talks/f9f7e56446a7462eb8e3e4ba6cc64770/?referer=%2Fen%2Farchive%2F2024%2520Spring%2Fpartners%2F42a2ee1c-85c9-4ceb-ba77-a0fe87f91cec%2F).
 
-[Документация по BuildCacheService](https://docs.gradle.org/current/javadoc/org/gradle/caching/BuildCacheService.html) достаточно скудная, поэтому когда я разбирался в теме, подсматривал в исходники Gradle и в реализацию [Gradle Redis build cache](https://github.com/tehlers/gradle-redis-build-cache).
+### Пишем BuildService
 
-### Притворяемся Remote Build Cache
-
-Реализуем свой сервис, прикидывающийся сервисом для Remote Build Cache. Gradle будет давать нам ключи кэша для того чтобы мы их сохранили, но мы будем просто запоминать их:
+Реализуем свой сервис, который подписывается на все билд-операции и в конце билда выгружает список кэш-ключей в файл:
 
 ```kotlin
-internal class CraftyBuildCacheService(
-    private val configuration: CraftyBuildCacheConfig,
-    private val objects: ObjectFactory,
-) : BuildCacheService {
+internal abstract class CacheKeysHandlerService :
+    BuildService<CacheKeysHandlerService.Params>,
+    BuildOperationListener,
+    AutoCloseable {
 
-    private val storedCacheKeySet: MutableSet<String> = ConcurrentHashMap.newKeySet()
-
-    override fun load(key: BuildCacheKey, reader: BuildCacheEntryReader): Boolean {
-        storedCacheKeySet.add(key.displayName)
-        return false
+    interface Params : BuildServiceParameters {
+        val outputFile: RegularFileProperty
     }
 
-    override fun store(key: BuildCacheKey, writer: BuildCacheEntryWriter) {
-        storedCacheKeySet.add(key.displayName)
+    private val cacheKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    override fun started(descriptor: BuildOperationDescriptor, event: OperationStartEvent) {
+        /* no-op */
+    }
+
+    override fun progress(identifier: OperationIdentifier, event: OperationProgressEvent) {
+        /* no-op */
+    }
+
+    override fun finished(descriptor: BuildOperationDescriptor, event: OperationFinishEvent) {
+        when (val details = descriptor.details) {
+            // cохранение в кэш (локальный и remote)
+            is StoreOperationDetails -> cacheKeys += details.cacheKey
+            // загрузка из кэша (локального и remote)
+            is LoadOperationDetails -> cacheKeys += details.cacheKey
+            // сериализация кэша
+            is PackOperationDetails -> cacheKeys += details.cacheKey
+            // десериализация кэша
+            is UnpackOperationDetails -> cacheKeys += details.cacheKey
+        }
     }
 
     override fun close() {
-        println("${storedCacheKeySet.size} cache keys collected.")
-        // Делайте с этой инфой все что хотите :)))
-    }
-}
-```
-
-Класс для хранения и передачи настроек для сервиса тоже не сложный. `CraftyBuildCacheConfig` это просто аналог `extension` для `BuildCacheService`. Ребята из Gradle не могли сделать одинаково, поэтому разножопили по полной программе:
-
-```kotlin
-internal abstract class CraftyBuildCacheConfig : BuildCache {
-
-    // Значение по-умолчанию для того чтобы не делать nullability
-    var buildCacheDir: File = File("~/.gradle/caches/build-cache-1")
-}
-```
-
-Фабрика для создания сервиса:
-
-```kotlin
-internal class CraftyBuildCacheServiceFactory @Inject constructor(
-    private val objects: ObjectFactory,
-) : BuildCacheServiceFactory<CraftyBuildCacheConfig> {
-
-    override fun createBuildCacheService(
-        configuration: CraftyBuildCacheConfig,
-        describer: BuildCacheServiceFactory.Describer,
-    ): BuildCacheService {
-        describer
-            .type("crafty")
-            .config("gradle", "sucks")
-        return CraftyBuildCacheService(configuration, objects)
-    }
-}
-```
-
-Подключаем созданный нами сервис при помощи convention-плагина:
-
-```kotlin
-internal abstract class CraftyBuildCachePlugin @Inject constructor(
-    providers: ProviderFactory,
-) : Plugin<Settings> {
-
-    /**
-     * На CI можем включить плагин флагом в gradle.properties:
-     * `crafty.build.cache.enabled=true`.
-     * Для локальных билдов его функциональность нам не нужна
-     */
-    private val enabled: Provider<Boolean> = providers
-        .gradleProperty("crafty.build.cache.enabled")
-        .map { it.toBoolean() }
-        .orElse(false)
-
-    override fun apply(target: Settings): Unit = with(target) {
-        if (!enabled.get()) return@with
-
-        // Регистрируем Remote Build Cache, 
-        // точнее наш кэш, который притворяется Remote Build Cache
-        with(buildCache) {
-            // Обязательно сначала регистрируем сервис и фабрику от него
-            registerBuildCacheService(
-                CraftyBuildCacheConfig::class.java,
-                CraftyBuildCacheServiceFactory::class.java,
-            )
-            with(remote(CraftyBuildCacheConfig::class.java)) {
-                isPush = true
-                isEnabled = true
-                // Надо указать путь до директории с билд-кэшом
-                buildCacheDir = gradle.gradleUserHomeDir.resolve("caches/build-cache-1")
+        parameters.outputFile.get().asFile.bufferedWriter().use { writer ->
+            for (key in cacheKeys) {
+                writer.appendLine(key)
             }
         }
     }
 }
 ```
 
+Объясняю что происходит:
+1. Все сервисы Gradle работающие на фоне во время билда должны реализовывать интерфейс `BuildService<*>`. В дженерике указан `CacheKeysHandlerService.Params` потому что интерфейс Params является "внешним API" для нашего сервиса. Gradle может его сериализовывать для хранения в configuration cache (для нас не актуально, напишу причину ниже).
+2. Интерфейс `BuildOperationListener` мы реализуем для того чтобы подписаться на все билд-операции Gradle. Это интерфейс из пакета `internal`. К сожалению аналогичный "listener" из публичного API не дает возможности посмотреть на кэш-ключи.
+3. Интерфейс `AutoCloseable` для того чтобы реализовать метод `close()`. Он вызовется в конце билда. Именно там мы должны будем обработать собранные за все время билда данные. Сам метод `close()` в объяснении не нуждается.
+4. Собственно интерфейс `Params`. Даем возможность настройки сервиса. Передаем ему файл, в который надо будет вывалить список кэш-ключей в конце билда.
+5. Поле `cacheKeys: MutableSet<String>`. Тут аккумулируем кэш-ключи. Важно заметить, `BuildOperationListener` не является потокобезопасным коллбеком, нам нельзя считать блочить его работу, и нужно самостоятельно обрабатывать многопоточный вызов его методов. Поэтому для реализации `cacheKeys` используем коллекцию из `java.util.concurrent`.
+6. Из всех методов колбека `BuildOperationListener` нам нужно реализовать только `finished`. В нем мы ловим события билда. Кэш-ключи могут повторяться, но нам пофиг, у нас Set. Просто мониторим все возможные события для надежности.
+
+Подключаем созданный нами сервис при помощи convention-плагина:
+
+```kotlin
+@Suppress("unused", "UnstableApiUsage")
+internal abstract class CacheKeysHandlerPlugin @Inject constructor(
+    providers: ProviderFactory,
+    layout: BuildLayout,
+    private val registryInternal: BuildEventListenerRegistryInternal,
+) : Plugin<Settings> {
+
+    /** По-умолчанию плагин выключен, врубаем его только на CI */
+    private val enabled = providers
+        .gradleProperty("com.kickex.build.cache-keys.enabled")
+        .map { it.toBoolean() }
+        .getOrElse(false)
+
+    /** Можем указать кастомный путь до output-файла с кэш-ключами */
+    private val outputFile = providers
+        .gradleProperty("com.kickec.build.cache-keys.output-file")
+        .orElse("collected-cache-keys.txt")
+        // Когда мы указываем путь через layout, а не через java.io.File,
+        // Gradle сам создает файл на старте билда.
+        .map { layout.rootDirectory.file(it) }
+
+    override fun apply(target: Settings): Unit = with(target) {
+        if (!enabled) return
+
+        val serviceProvider = gradle.sharedServices.registerIfAbsent(
+            "cache-keys-handler-service",
+            CacheKeysHandlerService::class.java,
+        ) { spec ->
+            with(spec) {
+                parameters.outputFile.set(outputFile)
+            }
+        }
+        registryInternal.onOperationCompletion(serviceProvider)
+    }
+}
+```
+
+> Список того что можно инжектить в конструкторы плагинов и сервисов: [Understanding Services and Service Injection](https://docs.gradle.org/current/userguide/service_injection.html).
+
 Подключаем этот convention-плагин в `settings.gradle` файле вашего проекта. На этом собственно самая сложная часть закончилась.
 
-Метод `CraftyBuildCacheService#close()` вызывается один раз в конце билда. На момент его вызова у вас на руках есть `storedCacheKeySet` — список всех кэш-ключей, использованных в этом билде.
-
-> Важно заметить, что этот способ на 100% работает только тогда, когда нет тасок UP-TO-DATE. Потому что если таска UP-TO-DATE, Gradle не ходит к `BuildCacheService` за ней, следовательно, мы о ней не узнаем. 
->
-> На CI в чистых контейнерах это всегда будет работать. Локально при тестировании функционала это надо учитывать и вызывать `./gradlew clean` либо использовать `--rerun-tasks`. Подробнее про [отличия UP-TO-DATE и FROM-CACHE](https://stackoverflow.com/questions/65101472/what-is-the-difference-between-from-cache-and-up-to-date-in-gradle).
+> Важно заметить, что этот способ на 100% работает только при выполнении двух условий:
+> 1. Когда нет тасок UP-TO-DATE. Потому что если таска UP-TO-DATE, Gradle не использует механизм build caching и отследить кэш-ключи становится на порядок сложнее.
+> 2. Когда отключен Configuration Cache.
+> 
+> На CI в чистых контейнерах такой проблемы нет и configuration cache там отключен (отключен же, да?). 
+> 
+> Локально при тестировании функционала это надо учитывать. Перед тестами вызывать `./gradlew clean`, чтобы удалить `build` директории во всех модулях, а также использовать аргумент `--no-configuration-cache`. 
+> Подробнее про [отличия UP-TO-DATE и FROM-CACHE](https://stackoverflow.com/questions/65101472/what-is-the-difference-between-from-cache-and-up-to-date-in-gradle).
 
 ## Докручиваем базовое решение
 
@@ -383,38 +385,44 @@ internal abstract class CraftyBuildCachePlugin @Inject constructor(
 
 ![Intersection between old and new cache key sets](old-new-cache-intersection.png)
 
-На картинке все выглядит красиво, осталось это реализовать. Давайте допилим наш `CraftyBuildCacheService` функцией удаления неиспользованного билд-кэша:
+На картинке все выглядит красиво, осталось это реализовать. Давайте допилим наш `CacheKeysHandlerService` функцией удаления неиспользованного билд-кэша:
 
 ```kotlin
-internal class CraftyBuildCacheService(
-    private val configuration: CraftyBuildCacheConfig,
-    private val objects: ObjectFactory,
-) : BuildCacheService {
-    // код написанный ранее ...
+internal abstract class CacheKeysHandlerService @Inject constructor(
+    gradle: Gradle, // это тоже добавляем
+) :
+    BuildService<CacheKeysHandlerService.Params>,
+    BuildOperationListener,
+    AutoCloseable {
+
+    // написанный ранее код...
+
+    private val buildCacheDir: File = checkNotNull(gradle.gradleHomeDir)
+        .resolve("caches/build-cache-1")
 
     override fun close() {
-        println("${storedCacheKeySet.size} cache keys collected.")
+        // написанный ранее код...
         vacuumBuildCache()
     }
 
     private fun vacuumBuildCache() {
         // Находим все кэш-ключи, которые не участвовали в текущем билде
-        val unusedBuildCacheKeys = iterateBuildCache { it !in storedCacheKeySet }
+        val unusedBuildCacheKeys = iterateBuildCache { it !in cacheKeys }
         // Удаляем их и подсчитываем, сколько было удалено
         val unusedRemovedCount = unusedBuildCacheKeys
-            .onEach { Files.delete(it.toPath()) }
-            .count()
+            .count { file ->
+                file.delete()
+                    .also { check(it) { "Unable to delete file: $file" } }
+            }
         println("$unusedRemovedCount unused cache keys deleted.")
     }
 
     private fun iterateBuildCache(selector: (String) -> Boolean): Array<out File> =
-        configuration.buildCacheDir
+        buildCacheDir
             .listFiles { file -> selector(file.name) }
-            .orEmpty() 
+            .orEmpty()
 }
 ```
-
-> Я тут использую `Files.delete(Path)` вместо `it.delete()`, потому что `Files.delete(Path)` выбросит исключение если не получится удалить файл. Так мы сразу узнаем что что-то пошло не так.
 
 Теперь мы можем немного поправить наш GitLab Yaml конфиг. Во-первых, добавить новый конфиг для кэша:
 
@@ -452,7 +460,7 @@ cache build:
 
 #### А можно ли так же с кэшом зависимостей?
 
-Если можно, то я не знаю как это делать по ГОСТу. Зато есть лайфкек, называется "Перчатка Таноса". Работает следующим образом: используем `policy: pull-push` для GitLab кэша зависимостей; при этом на старте джобы удаляем 50% рандомных пакетов в `$GRADLE_USER_HOME/caches/modules-2/`. Отлично работающий на практике способ.
+Да можно, но это тема отдельной текстовой карточки. Есть лайфкек, называется "Перчатка Таноса". Работает следующим образом: используем `policy: pull-push` для GitLab кэша зависимостей; при этом на старте джобы удаляем 50% рандомных пакетов в `$GRADLE_USER_HOME/caches/modules-2/`. Отлично работающий на практике способ.
 
 <center>
 
@@ -462,8 +470,15 @@ cache build:
 
 ### Переиспользуем билд кэш MR-ов в пайплайнах MR-ов
 
-Это уже задача со звездочкой. Если мы хотим переиспользовать в МРах кэш, сгенерированный на предыдущих прогонах этих самых МРов, мы должны передавать между прогонами как можно меньше данных. На скачивание и отгрузку кэша не должно уходить больше времени, чем на полезную работу внутри джобы.
+> Это уже задача со звездочкой. 
+
+Можно еще сильнее ускорить прогон пайплайнов в МРах, если переиспользовать в каждом новом прогоне кэш, сгенерированный в предыдущем.
+Если мы хотим переиспользовать в МРах кэш, сгенерированный на предыдущих прогонах этих самых МРов, мы должны передавать между джобами как можно меньше данных. На скачивание и отгрузку кэша не должно уходить больше времени, чем на полезную работу внутри джобы.
 
 ![Branch specific cache keys set](branch-specific-key-set.png)
 
+Грубо говоря, после каждого прогона джобы на МРе мы должны:
+- Удалять все кэш-ключи, которые **ЕСТЬ** в ветке master. Потому что в следующий раз мы снова их спокойно подтянем из master.
+- Удалить все кэш-ключи, которых **НЕ ОКАЗАЛОСЬ** в списке использованных кэш-ключей в текущем прогоне. Потому что если мы их не юзали, в следующий раз они скорее всего не понадобятся.
 
+После такой чистки в директории `caches/build-cache-1` ~~<sup>начался сущий кошмар</sup>~~ останется дистиллят, который будет достаточно легким для отгрузки/загрузки во время подготовки GitLab раннера. Но при этом будет достаточен для ускорения следующего прогона.
