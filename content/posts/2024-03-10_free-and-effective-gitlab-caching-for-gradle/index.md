@@ -280,7 +280,7 @@ internal abstract class CacheKeysHandlerService :
     AutoCloseable {
 
     interface Params : BuildServiceParameters {
-        val outputFile: RegularFileProperty
+        val cacheKeysFile: RegularFileProperty
     }
 
     private val cacheKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -307,7 +307,7 @@ internal abstract class CacheKeysHandlerService :
     }
 
     override fun close() {
-        parameters.outputFile.get().asFile.bufferedWriter().use { writer ->
+        parameters.cacheKeysFile.get().asFile.bufferedWriter().use { writer ->
             for (key in cacheKeys) {
                 writer.appendLine(key)
             }
@@ -341,7 +341,7 @@ internal abstract class CacheKeysHandlerPlugin @Inject constructor(
         .getOrElse(false)
 
     /** Можем указать кастомный путь до output-файла с кэш-ключами */
-    private val outputFile = providers
+    private val cacheKeysFile = providers
         .gradleProperty("com.kickec.build.cache-keys.output-file")
         .orElse("collected-cache-keys.txt")
         // Когда мы указываем путь через layout, а не через java.io.File,
@@ -356,7 +356,7 @@ internal abstract class CacheKeysHandlerPlugin @Inject constructor(
             CacheKeysHandlerService::class.java,
         ) { spec ->
             with(spec) {
-                parameters.outputFile.set(outputFile)
+                parameters.cacheKeysFile.set(cacheKeysFile)
             }
         }
         registryInternal.onOperationCompletion(serviceProvider)
@@ -402,19 +402,14 @@ internal abstract class CacheKeysHandlerService @Inject constructor(
 
     override fun close() {
         // написанный ранее код...
-        vacuumBuildCache()
-    }
-
-    private fun vacuumBuildCache() {
-        // Находим все кэш-ключи, которые не участвовали в текущем билде
-        val unusedBuildCacheKeys = iterateBuildCache { it !in cacheKeys }
-        // Удаляем их и подсчитываем, сколько было удалено
-        val unusedRemovedCount = unusedBuildCacheKeys
-            .count { file ->
-                file.delete()
-                    .also { check(it) { "Unable to delete file: $file" } }
+        
+        // Удаляем все кэш-ключи, не вошедшие в текущий билд
+        val unusedCacheKeys = iterateBuildCache { it !in cacheKeys }
+        for (key in unusedCacheKeys) {
+            check(buildCacheDir.resolve(key).delete()) {
+                "Unable to delete cache key file: $key"
             }
-        println("$unusedRemovedCount unused cache keys deleted.")
+        }
     }
 
     private fun iterateBuildCache(selector: (String) -> Boolean): Array<out File> =
@@ -478,7 +473,54 @@ cache build:
 ![Branch specific cache keys set](branch-specific-key-set.png)
 
 Грубо говоря, после каждого прогона джобы на МРе мы должны:
-- Удалять все кэш-ключи, которые **ЕСТЬ** в ветке master. Потому что в следующий раз мы снова их спокойно подтянем из master.
-- Удалить все кэш-ключи, которых **НЕ ОКАЗАЛОСЬ** в списке использованных кэш-ключей в текущем прогоне. Потому что если мы их не юзали, в следующий раз они скорее всего не понадобятся.
+1. Удалить все кэш-ключи, которые **ЕСТЬ** в ветке master. Потому что в следующий раз мы снова их спокойно подтянем из master.
+2. Удалить все кэш-ключи, которых **НЕ ОКАЗАЛОСЬ** в списке использованных кэш-ключей в текущем билде. Потому что если мы их не юзали, в следующий раз они скорее всего не понадобятся.
 
-После такой чистки в директории `caches/build-cache-1` ~~<sup>начался сущий кошмар</sup>~~ останется дистиллят, который будет достаточно легким для отгрузки/загрузки во время подготовки GitLab раннера. Но при этом будет достаточен для ускорения следующего прогона.
+После такой чистки в директории `caches/build-cache-1` ~~<sup>начался сущий кошмар</sup>~~ останется дистиллят, который будет достаточно легким для отгрузки/загрузки во время подготовки GitLab раннера. Но при этом будет достаточен для заметного ускорения следующего прогона.
+
+#### Вакуумирование кэша (дистиллят)
+
+Для описанной выше схемы чистки кэша, состоящей из двух шагов, нужно допилить метод `close()` в `CacheKeysHandlerService`:
+
+```kotlin
+internal abstract class CacheKeysHandlerService @Inject constructor(
+    gradle: Gradle,
+) :
+    BuildService<CacheKeysHandlerService.Params>,
+    BuildOperationListener,
+    AutoCloseable {
+
+    // написанный ранее код...
+
+    override fun close() {
+        val cacheKeysFile = parameters.cacheKeysFile.asFile.get()
+
+        // Если файл с ключами не пустой, значит мы специально подсунули его на CI
+        // В файле хранится список ключей прилетевших с master ветки, удаляем их
+        cacheKeysFile.useLines { snapshotCacheKeys ->
+            for (key in snapshotCacheKeys) {
+                check(buildCacheDir.resolve(key).delete()) {
+                    "Unable to delete cache key file: $key"
+                }
+            }
+        }
+
+        // Записываем в файл новые ключики, дальше на CI разберутся что с ними делать
+        cacheKeysFile.bufferedWriter().use { writer ->
+            for (key in cacheKeys) {
+                writer.appendLine(key)
+            }
+        }
+
+        // Удаляем все кэш-ключи, не вошедшие в текущий билд
+        val unusedCacheKeys = iterateBuildCache { it !in cacheKeys }
+        for (key in unusedCacheKeys) {
+            check(buildCacheDir.resolve(key).delete()) {
+                "Unable to delete cache key file: $key"
+            }
+        }
+    }
+}
+```
+
+А на CI 
