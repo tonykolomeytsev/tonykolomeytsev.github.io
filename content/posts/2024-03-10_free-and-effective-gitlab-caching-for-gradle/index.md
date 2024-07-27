@@ -1,7 +1,6 @@
 +++
 title = "Gradle + GitLab: эффективный и бесплатный билд-кэш"
 date = "2024-07-27"
-draft = true
 
 [taxonomies]
 tags = ["gradle", "gitlab", "android", "docker"]
