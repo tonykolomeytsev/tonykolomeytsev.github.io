@@ -4,6 +4,9 @@ date = "2023-09-06"
 
 [taxonomies]
 tags = ["docker", "ROS", "robotics", "eurobot", "skoltech", "guide"]
+
+[extra]
+discussions = "kekmech/15"
 +++
 
 Продолжая серию постов про Eurobot, рассказываю про следующую деталь нашей инфраструктуры — доставку Docker образов до роботов в обход интернета и удаленных Docker Registry.

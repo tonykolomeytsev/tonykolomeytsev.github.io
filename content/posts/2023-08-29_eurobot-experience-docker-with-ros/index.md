@@ -4,6 +4,9 @@ date = "2023-08-29"
 
 [taxonomies]
 tags = ["docker", "ROS", "robotics", "eurobot", "skoltech", "practical case"]
+
+[extra]
+discussions = "kekmech/11"
 +++
 
 # Немного контекста
