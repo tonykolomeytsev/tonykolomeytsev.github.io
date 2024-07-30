@@ -4,6 +4,9 @@ date = "2024-07-27"
 
 [taxonomies]
 tags = ["gradle", "gitlab", "android", "docker"]
+
+[extra]
+discussions = "kekmech/43"
 +++
 
 # Контекст
