@@ -168,11 +168,11 @@ class KotlinJvmConventionPlugin : Plugin<Project> {
 
 > Первоисточник: [https://github.com/stepango/aar2jar](https://github.com/stepango/aar2jar)
 
-По опыту могу сказать, что для большинства модулей в проекте подключения android jar не будет достаточно. Мы часто используем в модулях внешние библиотеки, которые можно подключить только к android-модулям. 
+По опыту могу сказать, что для большинства модулей в проекте подключения android jar не будет достаточно. Мы часто используем внешние библиотеки, которые можно подключить только к android-модулям. 
 
 Все дело в том что библиотеки под Android распространяются в виде AAR артефактов. JVM модули не знают о таких и позволяют подключать к себе только JAR библиотеки. Если мы [заглянем внутрь AAR](https://developer.android.com/studio/projects/android-library#aar-contents), то увидим что это ZIP архив внутри которого содержатся всякие андроидо-специфичные штуки и... JAR файлы с кодом.
 
-#### Решение коротко
+#### Решение на русском языке
 
 Чтобы наши pure kotlin/java модули научились понимать AAR зависимости, нам нужно всего лишь ~~старый советский~~ распаковать AAR, вытащить из него JAR файлы и подключить их в качестве зависимостей к нашему модулю. Звучит не сложно да?
 
@@ -182,9 +182,11 @@ class KotlinJvmConventionPlugin : Plugin<Project> {
 
 > `TransformAction` можно рассматривать как Task Action, но у которого есть ровно один input и один output. И этот Action предназначен только для конвертации одного артефакта в другой.
 >
+> Когда какой-либо input у таски имеет "непонятный тип", Gradle попытается привести его к "понятному типу" путем применения нужных трансформаций.
+>
 > Нам нужен такой `TransformAction`, который получив на вход AAR либу, выплюнет наружу ее JAR файлы
 
-Собсна TransformAction может выглядеть вот так:
+Собсна `TransformAction` может выглядеть вот так:
 
 ```kotlin
 abstract class Aar2JarTransformAction : TransformAction<TransformParameters.None> {
@@ -249,7 +251,7 @@ dependencies {
 
 ![Gradle Sucks V1](gradle-sucks-v1.png)
 
-Я до конца так и не понял, как это обойти. Возможно в однои issue и кроется ответ: [github.com/gradle/gradle/issues/8386](https://github.com/gradle/gradle/issues/8386). 
+Я до конца так и не понял, как это обойти. Возможно в одном issue и кроется ответ: [github.com/gradle/gradle/issues/8386](https://github.com/gradle/gradle/issues/8386). 
 Если выражаться на птичьем языке — какие-то из атрибутов конфигурации `compileOnly` несовместыми с подключаемыми AAR. А обойти это можно создав отдельную конфигурацию и вкинув ее содержимое в java compile classpath ручками. Пиздеееец.
 
 #### Пробуем подключить AAR либу через `aarCompileOnly`
@@ -262,7 +264,7 @@ fun Project.configureAar2JarFeature() {
 
     configurations.register("aarCompileOnly") { aarCompileOnly ->
         with(aarCompileOnly) {
-            isTransitive = false
+            isTransitive = false // не подсасываем транзитивные зависимости
             isCanBeConsumed = false
             attributes.attribute(artifactTypeAttribute, "jar")
         }
@@ -293,7 +295,7 @@ dependencies {
 
 #### Докручиваем решение
 
-Для того чтобы можно было подключать какие-то Android-библиотеки исключительно к Unit-тестам, нужна еще одна конфигурация: `aarTestImplementation`. Такой странный выбор я объясню в конце.
+Для того чтобы можно было подключать какие-то Android-библиотеки к Unit-тестам, нужна еще одна конфигурация: `aarTestImplementation`. Получается такой странный набор кастомных конфигураций, я объясню это в конце.
 
 ```kotlin
 fun Project.configureAar2JarFeature() {
@@ -363,17 +365,17 @@ private val Project.ideaExtension: IdeaModel
 
 Все потому что, как я уже писал, если библиотека есть в compile classpath, но отсутствует в runtime classpath, она не поедет вместе с вашим приложением на прод. И при обращении к любому ее классу в рантайме будет `NoClassDefFoundError`.
 
-> Так чисто на всякий случай пишу что implementation(androidJar) писать нигде не надо, потому что в рантайме он всегда есть и без вашей помощи.
+> Так чисто на всякий случай пишу что `implementation(androidJar)` писать нигде не надо, потому что в рантайме он всегда есть и без вашей помощи.
 
 ## Странный набор конфигураций
 
-AAR библиотеки как правило несут в себе иного другой полезной инфы, нужной для сборки Android приложения. Например, AndroidManifest и proguard файлы. Когда мы подключаем такую библиотеку через aar-to-jar трансформацию, мы отбрасываем все кроме `classes.jar`. 
+AAR библиотеки как правило несут в себе иного другой полезной инфы, нужной для сборки Android приложения. Например, AndroidManifest и proguard файлы. Когда мы подключаем такую библиотеку через aar-to-jar трансформацию, мы все это успешно выбрасываем.
 
-Поэтому я считаю что подключать AAR к jvm модулям нужно только через `aarCompileOnly`. Подключать только ради доступа к API. При этом в app модуле подключать эти библиотеки через implementation.
+Поэтому я считаю что подключать AAR к jvm модулям нужно только через `aarCompileOnly`. Подключать только ради доступа к API. При этом в `:app` модуле подключать эти библиотеки через `implementation`.
 
-Конфигурация aarTestImplementation подключает либу и в compile, и в runtime classpath. Это нужно для того чтобы Unit-тесты можно было запустить и чтоб они не падали из-за `NoClassDefFoundError`.
+Конфигурация `aarTestImplementation` подключает либу и в compile, и в runtime classpath. Это нужно для того чтобы Unit-тесты можно было запустить и чтоб они не падали из-за `NoClassDefFoundError`.
 
-## Нельзя подключить android lint
+## Погибает android lint
 
 Мы теряем возможность использования Android Lint, отключая AGP от модуля. Хорошо что у нас есть Detekt.
 
