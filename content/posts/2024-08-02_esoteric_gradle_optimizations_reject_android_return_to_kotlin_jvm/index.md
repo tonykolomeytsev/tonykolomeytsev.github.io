@@ -1,6 +1,6 @@
 +++
 title = "Эзотерические оптимизации Gradle: Попытка объяснить android-jar и aar-to-jar"
-date = "2024-08-02"
+date = "2024-08-11"
 
 [taxonomies]
 tags = ["gradle", "gitlab", "android"]
