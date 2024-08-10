@@ -1,5 +1,5 @@
 +++
-title = "Эзотерические оптимизации Gradle: Попытка объяснить android-jar и aar-to-jar"
+title = "Gradle заставляет избавляться от Android-модулей"
 date = "2024-08-11"
 
 [taxonomies]
