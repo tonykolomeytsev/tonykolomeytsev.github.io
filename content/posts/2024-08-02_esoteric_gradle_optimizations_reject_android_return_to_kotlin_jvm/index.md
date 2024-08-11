@@ -45,7 +45,7 @@ TLDR; Решение в том чтобы разрешить JVM модулям 
 
 Например, часто встречается зависимость от класса `android.content.Context`.
 
-AGP под капотом подключает к модулю `android.jar` - API от той версии Android под которую ты разрабатываешь (target sdk). Этот JAR не вшивается в твое приложение, он используется только на этапе сборки. Чтобы провалидировать все вызовы API Android из твоего кода, и чтобы у тебя в IDE автокомплит работал. По-умному говорят что `android.jar` входит в compile classpath, но не входит в runtime classpath. Подробнее об этом можно почитать [тут](https://techblog.bozho.net/runtime-classpath-vs-compile-time-classpath/). Когда приложение попадает на устройство или эмулятор, в рантайме оно уже [пользуется реальным android.jar](https://stackoverflow.com/questions/50283073/what-is-android-jar-what-does-it-include).
+AGP под капотом подключает к модулю `android.jar` - API от той версии Android под которую ты разрабатываешь (target sdk). Этот JAR не вшивается в твое приложение, он используется только на этапе сборки. Чтобы провалидировать все вызовы API Android из твоего кода, и чтобы в IDE автокомплит работал. По-умному говорят что `android.jar` входит в compile classpath, но не входит в runtime classpath. Подробнее об этом можно почитать [тут](https://techblog.bozho.net/runtime-classpath-vs-compile-time-classpath/). Когда приложение попадает на устройство или эмулятор, в рантайме оно уже [пользуется реальным android.jar](https://stackoverflow.com/questions/50283073/what-is-android-jar-what-does-it-include).
 
 > compileClasspath можно воспринимать как аналог заголовочных (.h) файлов в Си/С++. Им не обязательно нести реализацию. Они нужны в первую очередь для того, чтобы дать нам API внешних библиотек.
 
@@ -252,7 +252,7 @@ dependencies {
 ![Gradle Sucks V1](gradle-sucks-v1.png)
 
 Я до конца так и не понял, как это обойти. Возможно в одном issue и кроется ответ: [github.com/gradle/gradle/issues/8386](https://github.com/gradle/gradle/issues/8386). 
-Если выражаться на птичьем языке — какие-то из атрибутов конфигурации `compileOnly` несовместыми с подключаемыми AAR. А обойти это можно создав отдельную конфигурацию и вкинув ее содержимое в java compile classpath ручками. Пиздеееец.
+Если выражаться на птичьем языке — какие-то из атрибутов конфигурации `compileOnly` несовместимы с подключаемыми AAR. А обойти это можно создав отдельную конфигурацию и вкинув ее содержимое в java compile classpath ручками. Пиздеееец.
 
 #### Пробуем подключить AAR либу через `aarCompileOnly`
 
