@@ -166,6 +166,8 @@ class KotlinJvmConventionPlugin : Plugin<Project> {
 
 Теперь прописывая в Kotlin JVM модулях зависимость `compileOnly(androidJar)` мы сможем использовать в них Context и другие андроидовские классы.
 
+> Реализовать шаринг данных между корневым и дочерними проектами на этапе конфигурации можно разными способами. Возможно, в будущем текущий способ станет несовместимым с project isolation. Но к тому моменту у нас будет новое API для подобных целей.
+
 ### Избавляемся полностью жестб (aar-to-jar)
 
 > Первоисточник: [https://github.com/stepango/aar2jar](https://github.com/stepango/aar2jar)
