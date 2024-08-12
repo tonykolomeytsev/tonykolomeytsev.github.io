@@ -1,0 +1,845 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
+    <title>Kekmech Blog - skoltech</title>
+    <link href="https://tonykolomeytsev.github.io/tags/skoltech/atom.xml" rel="self" type="application/atom+xml"/>
+    <link href="https://tonykolomeytsev.github.io"/>
+    <generator uri="https://www.getzola.org/">Zola</generator>
+    <updated>2023-09-06T00:00:00+00:00</updated>
+    <id>https://tonykolomeytsev.github.io/tags/skoltech/atom.xml</id>
+    <entry xml:lang="en">
+        <title>Опыт Eurobot: Деплой Docker образов на роботов в локальной сети</title>
+        <published>2023-09-06T00:00:00+00:00</published>
+        <updated>2023-09-06T00:00:00+00:00</updated>
+        <author>
+          <name>Anton Kolomeytsev</name>
+        </author>
+        <link rel="alternate" href="https://tonykolomeytsev.github.io/posts/deploy-to-robots-with-docker/" type="text/html"/>
+        <id>https://tonykolomeytsev.github.io/posts/deploy-to-robots-with-docker/</id>
+        
+        <content type="html">&lt;p&gt;Продолжая серию постов про Eurobot, рассказываю про следующую деталь нашей инфраструктуры — доставку Docker образов до роботов в обход интернета и удаленных Docker Registry.&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;a href=&quot;&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;&quot;&gt;В предыдущем посте&lt;&#x2F;a&gt; я рассказал о том, как мы собирали Docker образы и как контейнеры запускались на роботах. В этот раз покажу, как эти самые образы по Wi-Fi доставлять с машин разработчиков на роботов.&lt;&#x2F;p&gt;
+&lt;p&gt;Для опытных бэкендеров скорее всего материал поста не будет новым. Для меня же большая часть описанного здесь в свое время стала откровением.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;deploying-app.jpg&quot; alt=&quot;Deploying Docker App&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;em&gt;Именно так выглядит деплой&lt;&#x2F;em&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h1 id=&quot;motivatsiia&quot;&gt;Мотивация&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#motivatsiia&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;p&gt;Во время подготовки к соревнованиям мы использовали как классический подход доставки образов, через Docker Hub, так и эзотерический — по локальной сети. &lt;&#x2F;p&gt;
+&lt;p&gt;Первый способ мы использовали в основном, загружая в Docker Hub стабильные образы, собранные из ветки master на CI в нашем репозитории. Мы точно знали что в публичном репозитории находятся рабочие образы и иногда откатывались к ним.&lt;&#x2F;p&gt;
+&lt;p&gt;По локальной сети же мы деплоили в 99% случаев, находясь физически в лабе и отлаживая роботов вечерами после пар.&lt;&#x2F;p&gt;
+&lt;p&gt;Таким образом, заливать образы минуя интернет я хотел по двум причинам: &lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Это тупо быстрее и удобнее.&lt;&#x2F;li&gt;
+&lt;li&gt;На соревнованиях, куда мы приедем, может не быть интернета или он может быть нестабилен.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h1 id=&quot;samoe-prostoe-reshenie&quot;&gt;Самое простое решение&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#samoe-prostoe-reshenie&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;!-- Тут рассказать про первое решение до которого я додумался, экспорт docker образа в tar архив и его отправка --&gt;
+&lt;p&gt;Первое решение, которое мне пришло в голову, &lt;a href=&quot;https:&#x2F;&#x2F;stackoverflow.com&#x2F;questions&#x2F;23935141&#x2F;how-to-copy-docker-images-from-one-host-to-another-without-using-a-repository&quot;&gt;пришло в голову кому-то еще до меня&lt;&#x2F;a&gt;. Заключалось решение в следующем:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Собираем Docker образ.&lt;&#x2F;li&gt;
+&lt;li&gt;Экспортируем образ в tar архив.&lt;&#x2F;li&gt;
+&lt;li&gt;Отправляем tar архив при помощи &lt;code&gt;rsync&lt;&#x2F;code&gt; или &lt;code&gt;scp&lt;&#x2F;code&gt; на робота.&lt;&#x2F;li&gt;
+&lt;li&gt;На роботе импортируем tar архив обратно в образ.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;Решение железное и супер понятное, но во всем остальном оно ужасно:&lt;&#x2F;p&gt;
+&lt;ul&gt;
+&lt;li&gt;Вы тратите время не только на сборку образа, но и на его экспорт. Экспорт ROS образов у нас занимал 20-30 секунд.&lt;&#x2F;li&gt;
+&lt;li&gt;Нельзя отправить только изменившиеся слои образа, придется каждый раз отправлять ВЕСЬ образ.&lt;&#x2F;li&gt;
+&lt;li&gt;Образы с ROS весят больше гигабайта, и даже архивирование их не спасает. Передача таких тяжелых образов сама по себе будет съедать пару минут времени (я проверял).&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;p&gt;Я реализовал этот способ, понял что он работает ужасно долго и для нас он не подходит. Поэтому тратить буквы на него не буду, сразу перейду к объяснению финального решения.&lt;&#x2F;p&gt;
+&lt;h1 id=&quot;samoe-slozhnoe-reshenie&quot;&gt;Самое сложное решение&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#samoe-slozhnoe-reshenie&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;!-- Тут рассказать сразу про суть текущего решения --&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Если вы повторяете описанные здесь шаги на MacOS, вам нужно знать &lt;a href=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;#mac-os-specific&quot;&gt;кое-что важное&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;Оптимальное решение работает следующим образом:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Собираем образ локально на своем лэптопе&#x2F;ПК&#x2F;микроволновке.&lt;&#x2F;li&gt;
+&lt;li&gt;По SSH запускаем на роботе Docker Registry.&lt;&#x2F;li&gt;
+&lt;li&gt;Поднимаем SSH туннель между вашей машиной и роботом, чтобы Docker Registry робота стал доступен в локальной сети.&lt;&#x2F;li&gt;
+&lt;li&gt;Пушим собранный вами локально образ в Docker Registry, расположенный на роботе.&lt;&#x2F;li&gt;
+&lt;li&gt;Освобождаем неиспользуемые ресурсы.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;Прежде чем проделывать все эти шаги, нужно кое-что настроить на своей машине. Но самое главное — на роботе должен быть установлен Docker, и запускаться он должен без sudo (&lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;engine&#x2F;install&#x2F;linux-postinstall&#x2F;#manage-docker-as-a-non-root-user&quot;&gt;Manage Docker as a non-root user&lt;&#x2F;a&gt;).&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;shag-0-predvaritel-naia-nastroika&quot;&gt;Шаг 0: Предварительная настройка&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-0-predvaritel-naia-nastroika&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;h3 id=&quot;nastraivaem-ssh-kliuchi&quot;&gt;Настраиваем SSH-ключи&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#nastraivaem-ssh-kliuchi&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;!-- Про SSH ключи и почему они нужны --&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Я настоятельно рекомендую один раз выполнить этот пункт, в противном случае работоспособность кода ниже уже будет под вопросом, а удобство использования гарантированно пострадает.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;SSH-ключи, это более безопасная альтернатива паре логин&#x2F;пароль, позволяющая один раз &amp;quot;зарегистрировать&amp;quot; ваш лэптоп в пямяти робота и далее входить с того же устройства уже без ввода пароля. Нормальное объяснение SSH-ключей: &lt;a href=&quot;https:&#x2F;&#x2F;selectel.ru&#x2F;blog&#x2F;ssh-keys&#x2F;&quot;&gt;ТЫК&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h4 id=&quot;proveriaem-chto-kliuch-uzhe-est&quot;&gt;Проверяем что ключ уже есть&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#proveriaem-chto-kliuch-uzhe-est&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h4&gt;
+&lt;p&gt;Проверить, что у вас уже есть SSH-ключ на устройстве, можно при помощи команды ниже:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ls ~&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;.ssh&#x2F;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Если в списке файлов будут &lt;code&gt;id_rsa&lt;&#x2F;code&gt; и &lt;code&gt;id_rsa.pub&lt;&#x2F;code&gt;, новый ключ генерировать не нужно.&lt;&#x2F;p&gt;
+&lt;h4 id=&quot;generiruem-ssh-kliuch&quot;&gt;Генерируем SSH-ключ&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#generiruem-ssh-kliuch&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h4&gt;
+&lt;p&gt;Если у вас еще нет SSH ключа на устройстве, нужно &lt;a href=&quot;https:&#x2F;&#x2F;selectel.ru&#x2F;blog&#x2F;tutorials&#x2F;how-to-generate-ssh&#x2F;&quot;&gt;выпустить новый&lt;&#x2F;a&gt;. Команда для выпуска ключа следующая:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh-keygen -t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; rsa
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Пароль для SSH-ключа ставить не надо.&lt;&#x2F;p&gt;
+&lt;h4 id=&quot;registriruem-ssh-kliuch-na-robote&quot;&gt;Регистрируем SSH-ключ на роботе&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#registriruem-ssh-kliuch-na-robote&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h4&gt;
+&lt;p&gt;В команде ниже:&lt;&#x2F;p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;user&lt;&#x2F;code&gt; — имя юзера в ОС робота. У нас в RESET имя юзера всегда было &lt;code&gt;nuc&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;li&gt;&lt;code&gt;host&lt;&#x2F;code&gt; — IP-адрес робота в локальной сети, например &lt;code&gt;192.168.1.64&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;p&gt;Код для Linux&#x2F;MacOS:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh-copy-id&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; user@host
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;&lt;a href=&quot;https:&#x2F;&#x2F;chrisjhart.com&#x2F;Windows-10-ssh-copy-id&#x2F;&quot;&gt;Код для Windows Powershell&lt;&#x2F;a&gt; немного отличается:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;powershell&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-powershell &quot;&gt;&lt;code class=&quot;language-powershell&quot; data-lang=&quot;powershell&quot;&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;type &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;$env:USERPROFILE&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\.ssh\id_rsa.pub &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ssh user&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;@host &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;cat &amp;gt;&amp;gt; .ssh&#x2F;authorized_keys&amp;quot;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;h3 id=&quot;docker-buildkit&quot;&gt;Docker BuildKit&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#docker-buildkit&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;!-- Про то как настроить BuildKit и разрешить пушить в localhost:5000 --&gt;
+&lt;p&gt;&lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;build&#x2F;buildkit&#x2F;&quot;&gt;BuildKit&lt;&#x2F;a&gt; это новый бэкенд для Docker, который нам нужен конкретно из-за своей способности билдить образы под разные архитектуры процессоров.&lt;&#x2F;p&gt;
+&lt;p&gt;Убедитесь что на вашем компе установлен один из трех вариантов софта с BuildKit внутри:&lt;&#x2F;p&gt;
+&lt;ul&gt;
+&lt;li&gt;Docker Desktop — рекомендую ставить именно его и не париться.&lt;&#x2F;li&gt;
+&lt;li&gt;Docker версии 23.0 и выше.&lt;&#x2F;li&gt;
+&lt;li&gt;Старая версия Docker с &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;build&#x2F;buildkit&#x2F;&quot;&gt;установленным BuildKit&lt;&#x2F;a&gt; — хз зачем вам вообще может понадобится эта опция.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;docker-desktop-screenshot.png&quot; alt=&quot;Docker Desktop Screenshot&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h3 id=&quot;sozdanie-i-nastroika-buildkit-builder&quot;&gt;Создание и настройка BuildKit Builder&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#sozdanie-i-nastroika-buildkit-builder&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Builder — Docker контейнер с эмулятором, который умеет собирать Docker образы под разные архитектуры процессоров. Если вы уже установили Docker, то один билдер с именем &lt;code&gt;default&lt;&#x2F;code&gt; у вас уже автоматически создан.&lt;&#x2F;p&gt;
+&lt;p&gt;Нам нужно создать новый билдер и передать в него наш конфиг &lt;code&gt;buildkitd.default.toml&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildx create \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --name&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; eurobot-builder \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --config&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildkitd.default.toml \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --bootstrap --use
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Опция &lt;code&gt;--bootstrap&lt;&#x2F;code&gt; сразу запустит билдер, опция &lt;code&gt;--use&lt;&#x2F;code&gt; сделает его билдером по-умолчанию.&lt;&#x2F;p&gt;
+&lt;p&gt;Заводить свой билдер нужно из-за того, что из коробки Docker не позволяет отправлять образы куда-либо, кроме защищенных цифровой подписью репозиториев в интернетах. В конфиге &lt;code&gt;buildkitd.default.toml&lt;&#x2F;code&gt; разрешаем пушить образы по адресу &lt;code&gt;localhost:5000&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;toml&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-toml &quot;&gt;&lt;code class=&quot;language-toml&quot; data-lang=&quot;toml&quot;&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;[registry.&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;host.docker.internal:5000&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;]
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;http &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;= &lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;true
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Вы можете возмутиться: откуда тут &lt;code&gt;host.docker.internal:5000&lt;&#x2F;code&gt;?&lt;&#x2F;p&gt;
+&lt;p&gt;Ответ: билдеры это обычные Docker контейнеры, им недоступна ваша локальная сеть по адресу &lt;code&gt;localhost&lt;&#x2F;code&gt;. Чтобы обойти эту проблему, в Docker есть специальный алиас &lt;code&gt;host.docker.internal&lt;&#x2F;code&gt;, ведущий в &amp;quot;настоящую&amp;quot; локальную сеть вашего компьютера. Про алиас и конкретно наш юзкейс можно почитать подробнее в &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;desktop&#x2F;networking&#x2F;#i-want-to-connect-from-a-container-to-a-service-on-the-host&quot;&gt;документации Docker&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;step-1&quot;&gt;Шаг 1: Собираем образ локально&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#step-1&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Рассказать про нюансы локальной сборки, которые есть при использовании данного метода деплоя --&gt;
+&lt;p&gt;Наконец-то собираем образ. Для этого в директории с &lt;code&gt;Dockerfile&lt;&#x2F;code&gt; запускается примерно вот такой код:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildx build \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --platform&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; linux&#x2F;amd64 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --tag&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; eurobot2023:latest \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --output&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; type=image,push=false \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    .
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Разберем по порядку:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Запускаем билд с помощью &lt;code&gt;docker buildx build&lt;&#x2F;code&gt; — явно сообщаем Docker чтобы он использовал BuildKit.&lt;&#x2F;li&gt;
+&lt;li&gt;Опция &lt;code&gt;--platform&lt;&#x2F;code&gt; определяет, &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;engine&#x2F;reference&#x2F;commandline&#x2F;buildx_build&#x2F;#platform&quot;&gt;под какую архитектуру будет сбилжен образ&lt;&#x2F;a&gt;. Билдить надо под архитектуру компьютера, который установлен на роботе. Например:
+&lt;ul&gt;
+&lt;li&gt;Intel NUC это &lt;code&gt;linux&#x2F;amd64&lt;&#x2F;code&gt;, &lt;&#x2F;li&gt;
+&lt;li&gt;Raspberry Pi 3B+ это &lt;code&gt;linux&#x2F;arm&#x2F;v7&lt;&#x2F;code&gt;, &lt;&#x2F;li&gt;
+&lt;li&gt;Raspberry Pi 4 и Nvidia Jetson Nano это &lt;code&gt;linux&#x2F;arm64&lt;&#x2F;code&gt; и так далее.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;Опция &lt;code&gt;--output&lt;&#x2F;code&gt; позволяет указать, &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;engine&#x2F;reference&#x2F;commandline&#x2F;buildx_build&#x2F;#output&quot;&gt;что делать с результатом билда&lt;&#x2F;a&gt;. В нашем случае это &lt;code&gt;type=image,push=false&lt;&#x2F;code&gt; — собираем OCI образ, никуда не пушим, в Docker не экспортируем:
+&lt;ul&gt;
+&lt;li&gt;Не тратится время на экспорт образов в Docker. Так общее время билда сокращается.&lt;&#x2F;li&gt;
+&lt;li&gt;Сбилженные образы хранятся в кэше, их не видно в приложении Docker Desktop или при вызове &lt;code&gt;docker images&lt;&#x2F;code&gt;. Таким образом частый билд не засирает вам список ваших образов.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h2 id=&quot;shag-2-podnimaem-docker-registry-na-robote&quot;&gt;Шаг 2: Поднимаем Docker Registry на роботе&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-2-podnimaem-docker-registry-na-robote&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Объяснить, почему insecure registry на самом деле secure благодаря SSH --&gt;
+&lt;p&gt;Docker Registry дает одно из основных преимуществ подхода — инкрементальную отправку образов. Docker во время отправки общается с Registry и узнает какие слои образов надо отправлять, а какие нет. Нам нужно только подключиться к этому Registry, остальное будет сделано за нас.&lt;&#x2F;p&gt;
+&lt;p&gt;Я использовал примерно вот такой код, для того чтобы через SSH запустить на роботе Registry:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ConnectTimeout=5 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; StrictHostKeyChecking=no \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; UserKnownHostsFile=&#x2F;dev&#x2F;null \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    $&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_HOSTNAME &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        docker run -d &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            -v &#x2F;etc&#x2F;docker-push-ssh&#x2F;registry:&#x2F;var&#x2F;lib&#x2F;registry &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            --name registry &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            --restart always &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            -p 127.0.0.1:5000:5000 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            registry:2 || true
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;    &amp;quot;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;blockquote&gt;
+&lt;p&gt;На Windows нет &lt;code&gt;&#x2F;dev&#x2F;null&lt;&#x2F;code&gt;, зато &lt;a href=&quot;https:&#x2F;&#x2F;stackoverflow.com&#x2F;questions&#x2F;67372030&#x2F;how-to-write-to-a-null-device-file-on-windows-10-so-i-can-not-read-back-wh&quot;&gt;есть&lt;&#x2F;a&gt; &lt;code&gt;\\.\NUL&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;Разбираем по порядку:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;Подключаемся по SSH к &lt;code&gt;$ROBOT_HOSTNAME&lt;&#x2F;code&gt;. Это как раз &lt;code&gt;user@host&lt;&#x2F;code&gt; из пункта про SSH-ключи — например &lt;code&gt;nuc@192.168.1.64&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;Опцию &lt;code&gt;-o ConnectTimeout=5&lt;&#x2F;code&gt; вы и сами сможете нагуглить. &lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;Опции &lt;code&gt;-o StrictHostKeyChecking=no&lt;&#x2F;code&gt; и &lt;code&gt;-o UserKnownHostsFile=&#x2F;dev&#x2F;null&lt;&#x2F;code&gt; нужны для &lt;a href=&quot;https:&#x2F;&#x2F;wiki.enchtex.info&#x2F;practice&#x2F;ssh_accept_host_key&quot;&gt;автоматического принятия RSA ключей&lt;&#x2F;a&gt; клиентом SSH. Это сделано для удобства, чтобы вас никто не спрашивал &amp;quot;ДЕЙСТВИТЕЛЬНО ХОТИТЕ ПОДКЛЮЧИТЬСЯ?&amp;quot; и для того чтобы у вас не разрастался файл &lt;code&gt;known_hosts&lt;&#x2F;code&gt; при смене IP адресов роботов.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;После установки соединения мы просто запускаем на роботе контейнер с Docker Registry. По-умолчанию Registry работает на порте 5000, при помощи биндинга &lt;code&gt;-p 127.0.0.1:5000:5000&lt;&#x2F;code&gt; мы делаем его доступным &lt;a href=&quot;https:&#x2F;&#x2F;brokkr.net&#x2F;2022&#x2F;03&#x2F;29&#x2F;publishing-docker-ports-to-127-0-0-1-instead-of-0-0-0-0&#x2F;&quot;&gt;только в локальной сети&lt;&#x2F;a&gt;. &lt;&#x2F;p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Образ с Registry весит в районе 20 мегабайт и в режиме бездействия не потребляет фактически никаких ресурсов. Так что если он будет все время работать, ничего плохого не произойдет даже на слабых компах типа Raspberry 3B+. Кстати, вместо &lt;code&gt;|| true&lt;&#x2F;code&gt; можно придумать более элегантное решение.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h2 id=&quot;shag-3-podnimaem-ssh-tunnel-mezhdu-robotom-i-komp-iuterom&quot;&gt;Шаг 3: Поднимаем SSH туннель между роботом и компьютером&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-3-podnimaem-ssh-tunnel-mezhdu-robotom-i-komp-iuterom&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;SSH-туннель нужен для того чтобы сущности, доступные только в локальной сети робота стали доступны в локальной сети вашего компьютера. Если вы играли с друзьями в компик по Hamachi, можете воспринимать SSH-туннель как что-то подобное, &lt;del&gt;но это все-таки другое&lt;&#x2F;del&gt;.&lt;&#x2F;p&gt;
+&lt;p&gt;Используем утилиту SSH:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh -N &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; StrictHostKeyChecking=no \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; UserKnownHostsFile=&#x2F;dev&#x2F;null \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -L &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;*&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;:5000:localhost:5000 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    $&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_HOSTNAME &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;! &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;gt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; SSHPID
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Разбираем что происходит:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Подключаемся по SSH к &lt;code&gt;$ROBOT_HOSTNAME&lt;&#x2F;code&gt; (к &lt;code&gt;user@host&lt;&#x2F;code&gt;).&lt;&#x2F;li&gt;
+&lt;li&gt;Опция &lt;code&gt;-N&lt;&#x2F;code&gt; позволяет не запускать никакую команду.&lt;&#x2F;li&gt;
+&lt;li&gt;Опция &lt;code&gt;-L *:5000:localhost:5000&lt;&#x2F;code&gt; пробрасывает порты из сети нашего компьютера в локальную сеть робота. Таким образом нам будет доступен Docker Registry, запущенный на роботе.&lt;&#x2F;li&gt;
+&lt;li&gt;Сам запуск ssh блокирует терминал, поэтому используем &lt;code&gt;&amp;amp;&lt;&#x2F;code&gt; чтобы запустить процесс в фоне и сразу записываем ID процесса в файл &lt;code&gt;SSHPID&lt;&#x2F;code&gt; для того чтобы закрыть тоннель после деплоя.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;На Windows, в PowerShell &lt;a href=&quot;https:&#x2F;&#x2F;www.reddit.com&#x2F;r&#x2F;PowerShell&#x2F;comments&#x2F;105e4gc&#x2F;how_to_run_a_process_in_background_in_powershell&#x2F;&quot;&gt;до 7 версии&lt;&#x2F;a&gt;, конструкция &lt;code&gt;&amp;amp; echo $! &amp;gt; SSHPID&lt;&#x2F;code&gt; работать не будет. В рамках туториала можно просто запустить ssh, после чего продолжить работу в новом терминале.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;h3 id=&quot;bonus-proveriaem-chto-vse-rabotaet&quot;&gt;Бонус: проверяем что все работает&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#bonus-proveriaem-chto-vse-rabotaet&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Чтобы проверить, что SSH туннель успешно поднят, можно &amp;quot;пингануть&amp;quot; с вашего компьютера Registry на роботе:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;curl -Is&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; http:&#x2F;&#x2F;localhost:5000&#x2F;v2&#x2F;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Что выведет curl в случае успешного поднятия туннеля:&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;color:#6c7079;&quot;&gt;&lt;code&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;HTTP&#x2F;1.1 200 OK
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;Content-Length: 2
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;Content-Type: application&#x2F;json; charset=utf-8
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;Docker-Distribution-Api-Version: registry&#x2F;2.0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;X-Content-Type-Options: nosniff
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;Date: Mon, 04 Sep 2023 20:02:21 GMT
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Если делать этот запрос в цикле, можно дождаться установки соединения и только потом продолжать деплой.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;shag-4-pushim-obraz-v-docker-registry-na-robote&quot;&gt;Шаг 4: Пушим образ в Docker Registry на роботе&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-4-pushim-obraz-v-docker-registry-na-robote&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;Приступаем к передаче образа на робота. Для этого используем ту же самую команду, что и для билда, но с двумя модификациями: &lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;--output type=registry&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;li&gt;&lt;code&gt;--tag host.docker.internal:5000&#x2F;eurobot2023:latest&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildx build \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --platform&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; linux&#x2F;amd64 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --tag&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; host.docker.internal:5000&#x2F;eurobot2023:latest \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --output&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; type=registry \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    .
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Так как с момента предыдущего билда в &lt;a href=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;#step-1&quot;&gt;&lt;strong&gt;Шаге 1&lt;&#x2F;strong&gt;&lt;&#x2F;a&gt; ничего не изменилось и все слои из докерфайла уже есть в кэше, стадия билда будет пропущена. Начнется загрузка образа в Docker Registry робота.&lt;&#x2F;p&gt;
+&lt;p&gt;Почему это вообще работает:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Опция &lt;code&gt;--output type=registry&lt;&#x2F;code&gt; указывает пушить в Registry после сборки образа.&lt;&#x2F;li&gt;
+&lt;li&gt;В тег образа мы добавляем префикс &lt;code&gt;host.docker.internal:5000&#x2F;&lt;&#x2F;code&gt; для того чтобы BuildKit билдер пушил образ в Registry, который доступен из нашей локальной сети. Если указать &lt;code&gt;localhost:5000&#x2F;&lt;&#x2F;code&gt;, то отправка не заработает, ибо &lt;code&gt;localhost&lt;&#x2F;code&gt; внутри контейнера с билдером ведет в &lt;a href=&quot;https:&#x2F;&#x2F;www.youtube.com&#x2F;watch?v=dQw4w9WgXcQ&quot;&gt;совсем другое место&lt;&#x2F;a&gt;.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;На самом роботе надо &amp;quot;стянуть&amp;quot; образ из Registry, чтобы он появился в списке при вызове &lt;code&gt;docker images&lt;&#x2F;code&gt; и после этого вернуть ему нормальное имя. Это мы тоже делаем через SSH:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ConnectTimeout=5 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; StrictHostKeyChecking=no \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; UserKnownHostsFile=&#x2F;dev&#x2F;null \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    $&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_HOSTNAME &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        docker pull localhost:5000&#x2F;eurobot2023:latest &amp;amp;&amp;amp; \ 
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        docker tag localhost:5000&#x2F;eurobot2023:latest eurobot2023:latest
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;    &amp;quot;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;И на этом деплой закончился, образ &lt;code&gt;eurobot2023:latest&lt;&#x2F;code&gt; уже на роботе и готов к запуску.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;shag-5-chistim-za-soboi&quot;&gt;Шаг 5: Чистим за собой&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-5-chistim-za-soboi&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;Чтобы остановить SSH-туннель, можно просто убить процесс ssh. Для этого ранее мы запоминали его PID в файл &lt;code&gt;SSHPID&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;cat&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; SSHPID &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;xargs&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; kill
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;rm&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; SSHPID &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# не забываем удалить временный файл тоже
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Останавливать Docker Registry на роботе, как я уже писал, смысла большого нет. Дешевле по времени и вычислительным ресурсам просто оставить его работать. Есть еще одна причина не трогать его — если вы работаете в команде и одновременно льете образы на робота, вы можете нечаянно завершить Registry пока кто-то другой передает образ. &lt;&#x2F;p&gt;
+&lt;h1 id=&quot;podvodnye-kamni&quot;&gt;Подводные камни&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#podvodnye-kamni&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;h2 id=&quot;mac-os-specific&quot;&gt;Комментарий по поводу Mac OS&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#mac-os-specific&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;На Mac OS нельзя просто так взять и пробросить SSH-туннель для порта 5000. Все потому что служба AirPlay тоже использует этот порт.&lt;&#x2F;p&gt;
+&lt;p&gt;Если хотите чтобы описанный здесь код заработал на вашем яблочном компьютере, &lt;a href=&quot;https:&#x2F;&#x2F;habr.com&#x2F;ru&#x2F;news&#x2F;591087&#x2F;&quot;&gt;отключите службу AirPlay&lt;&#x2F;a&gt;, либо поменяйте во всех скриптах из этого поста порт 5000 на другой, например на 5001.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;raskhod-mesta-na-diske&quot;&gt;Расход места на диске&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#raskhod-mesta-na-diske&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;Через какое-то время активной работы у вас на устройстве и на роботе начнут скапливаться груды ненужных слоев от Docker образов. Не забывайте их чистить.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;pile-of-containers.jpg&quot; alt=&quot;Pile Of Docker Containers&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;em&gt;Извините за картинку из Midjourney, я не удержался&lt;&#x2F;em&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h2 id=&quot;etot-protsess-nuzhdaetsia-v-avtomatizatsii&quot;&gt;Этот процесс нуждается в автоматизации&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#etot-protsess-nuzhdaetsia-v-avtomatizatsii&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Еще раз напомнить что это лучше не делать руками, рассказать про Bazel в очередной раз --&gt;
+&lt;p&gt;Во время подготовки к соревнованиям мы не запускали все эти шаги руками. Мы пользовались мета билд системой bldr, которая упрощала процесс, скрывая кишки с докером внутри себя.&lt;&#x2F;p&gt;
+&lt;p&gt;В целом, чтобы автоматизировать все шаги для простого проекта, достаточно и обыкновенных sh скриптов. Если работать в сложном монорепозитории, лучше для подобных затей использовать &lt;a href=&quot;https:&#x2F;&#x2F;bazel.build&#x2F;&quot;&gt;Bazel&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h1 id=&quot;mysli-naposledok&quot;&gt;Мысли напоследок&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#mysli-naposledok&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;p&gt;В команде RESET до последнего момента SSH туннель запускался немного иначе — в виде Docker контейнера с утилитой ssh внутри. Это негативно сказывалось на скорости установки и сброса соединения, но зато было удобно останавливать туннель, просто останавливая Docker контейнер. А еще не надо было использовать хак с &lt;code&gt;host.docker.internal&lt;&#x2F;code&gt; для доступа к SSH туннелю внутри Docker сети. Но настраивать такую конфигурацию сложнее, поэтому специально для этого поста я немного допилил нашу реализацию.&lt;&#x2F;p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Чем больше я ковырялся c bldr, тем больше хотелось переписать все на Bazel и опубликовать на GitHub. Так любые робототехнические команды могли бы использовать все наработки.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;Деплой по локальной сети сэкономил нам кучу человекочасов во время подготовки к соревнованиям. Но на то чтобы разобраться, как все правильно настроить и автоматизировать, у меня ушло несколько недель. Этот гайд поможет избежать подобных жертв)))&lt;&#x2F;p&gt;
+</content>
+        
+    </entry>
+    <entry xml:lang="en">
+        <title>Опыт Eurobot: ROS2 вместе с Docker</title>
+        <published>2023-08-29T00:00:00+00:00</published>
+        <updated>2023-08-29T00:00:00+00:00</updated>
+        <author>
+          <name>Anton Kolomeytsev</name>
+        </author>
+        <link rel="alternate" href="https://tonykolomeytsev.github.io/posts/eurobot-experience-docker-with-ros/" type="text/html"/>
+        <id>https://tonykolomeytsev.github.io/posts/eurobot-experience-docker-with-ros/</id>
+        
+        <content type="html">&lt;h1 id=&quot;nemnogo-konteksta&quot;&gt;Немного контекста&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#nemnogo-konteksta&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;p&gt;Эта статья — практический кейс применения Docker в робототехнике, а не туториал. Для того, чтобы понять все что далее написано, нужно на среднем уровне владеть Docker и иметь небольшое понимание принципов работы ROS.&lt;&#x2F;p&gt;
+&lt;p&gt;Материал для статьи родился в результате попадания профессионального Android-разработчика с опытом в бэкенде (меня) в робототехническую команду. На протяжении полугода мы готовили двух роботов к соревнованиям &lt;a href=&quot;https:&#x2F;&#x2F;www.eurobot.org&#x2F;eurobot-contest&#x2F;eurobot-2023&#x2F;&quot;&gt;Eurobot 2023&lt;&#x2F;a&gt;. Так вышло, что мне пришлось взять на себя роль Core-разработчика и решать инфраструктурные проблемы. В результате я пришел к очень интересным решениям, которыми наконец-то могу поделиться.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;eurobot-photo-1.jpg&quot; alt=&quot;Eurobot Photo 1&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;p&gt;Если вы не знакомы со спецификой соревнований Eurobot, то конечно лучше сначала посмотреть &lt;a href=&quot;https:&#x2F;&#x2F;www.youtube.com&#x2F;live&#x2F;BvLpiho28uI?si=m2owafdwym0hwJIT&amp;amp;t=1540&quot;&gt;официальный YouTube канал&lt;&#x2F;a&gt;. Но если объяснять коротко, то Eurobot — это робототехнические соревнования, в которых на игровом поле автономные роботы двух команд одновременно выполняют задания и набирают очки. Крутость соревнований в том, что нельзя &lt;del&gt;надрочить&lt;&#x2F;del&gt; вылизать идеальную конструкцию робота, которая бы позволяла побеждать из года в год. Каждый год поле, игровые элементы на нем и правила игры меняются. После публикации новых правил в сентябре команды начинают готовиться к соревнованиям.&lt;&#x2F;p&gt;
+&lt;p&gt;С сентября 2022 года по май 2023 я был частью команды &lt;a href=&quot;https:&#x2F;&#x2F;www.skoltech.ru&#x2F;2023&#x2F;05&#x2F;reset-stal-chempionom-sorevnovanij-avtonomnyh-robotov-eurobot-russia-2023&#x2F;&quot;&gt;RESET&lt;&#x2F;a&gt; из &lt;a href=&quot;https:&#x2F;&#x2F;www.skoltech.ru&#x2F;&quot;&gt;Сколтеха&lt;&#x2F;a&gt;. И мы готовились к &lt;a href=&quot;https:&#x2F;&#x2F;www.eurobot.org&#x2F;eurobot-contest&#x2F;eurobot-2023&#x2F;&quot;&gt;Eurobot 2023&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h1 id=&quot;predposylki-perekhoda-na-docker&quot;&gt;Предпосылки перехода на Docker&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#predposylki-perekhoda-na-docker&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;p&gt;До 2022 года в команде RESET не использовали Docker для разработки. Способы программирования роботов напоминали веб-разработку 10-летней давности, когда еще мало кто использовал контейнеризацию и все накатывали софт прямо на операционную систему.
+Поэтому совершенный нами переход я считаю большим шагом вперед.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;zachem-nuzhen-ros&quot;&gt;Зачем нужен ROS&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#zachem-nuzhen-ros&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про то, что из себя представляют проекты на ROS и как взаимодействуют между собой --&gt;
+&lt;p&gt;На протяжении всего своего существования в команде RESET разрабатывали софт для роботов при помощи &lt;a href=&quot;https:&#x2F;&#x2F;www.ros.org&#x2F;&quot;&gt;ROS&lt;&#x2F;a&gt;. Это удобно, из-за того что ROS позволяет быстро прототипировать функционал, неплохое решение для соревновательной робототехники.&lt;&#x2F;p&gt;
+&lt;p&gt;Я не буду полностью расписывать принципы работы ROS, для этого есть &lt;a href=&quot;https:&#x2F;&#x2F;docs.ros.org&#x2F;en&#x2F;humble&#x2F;Tutorials&#x2F;Beginner-CLI-Tools.html&quot;&gt;официальные туториалы&lt;&#x2F;a&gt;, но напомню концепты, важные для текущей статьи. Одна из главных фишек, которую дает ROS — это модульность. Вы можете вести разработку подсистем робота в отдельных проектах&#x2F;репозиториях, устанавливать чужие пакеты, а потом заставить все это работать вместе. Например, системы навигации, управления приводами и принятия решений могут быть разными приложениями, запускаемыми по-отдельности. ROS предоставляет готовый интерфейс для обмена данными между этими приложениями.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;pakety&quot;&gt;Пакеты&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#pakety&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Самая крупная &amp;quot;программная единица&amp;quot; в ROS, это пакет (package).
+&lt;strong&gt;Пакет&lt;&#x2F;strong&gt; — это один проект на С++ или Python, с файлом &lt;code&gt;package.xml&lt;&#x2F;code&gt; в корне.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;ros-packages.svg&quot; alt=&quot;ROS with Packages&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h3 id=&quot;nody&quot;&gt;Ноды&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#nody&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Каждый пакет в ROS может содержать в себе ограниченное здравым смыслом количество нод (node). &lt;strong&gt;Ноды&lt;&#x2F;strong&gt; — это программные сущности, при помощи которых разработчики взаимодействуют со всеми сущностями ROS. В библиотеках C++ и Python ноды это просто классы, от которых надо наследоваться, чтобы создать свои собственные ноды. Подробнее про ноды в &lt;a href=&quot;https:&#x2F;&#x2F;docs.ros.org&#x2F;en&#x2F;humble&#x2F;Tutorials&#x2F;Beginner-CLI-Tools&#x2F;Understanding-ROS2-Nodes&#x2F;Understanding-ROS2-Nodes.html&quot;&gt;официальном туториале&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;ros-packages-nodes.svg&quot; alt=&quot;ROS with Packages and Nodes&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h3 id=&quot;topiki&quot;&gt;Топики&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#topiki&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Обмен данными между всеми нодами происходит при помощи топиков (topics). &lt;strong&gt;Топик&lt;&#x2F;strong&gt; — это шина со своим именем и типом данных. Ноды могут публиковать данные в топики, и наоборот, прослушивать топики ожидая данных. Подробнее про топики в &lt;a href=&quot;https:&#x2F;&#x2F;docs.ros.org&#x2F;en&#x2F;humble&#x2F;Tutorials&#x2F;Beginner-CLI-Tools&#x2F;Understanding-ROS2-Topics&#x2F;Understanding-ROS2-Topics.html&quot;&gt;официальном туториале&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;ros-packages-nodes-topics.svg&quot; alt=&quot;ROS with Packages, Nodes and Topics&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h3 id=&quot;reziumiruem&quot;&gt;Резюмируем&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#reziumiruem&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;ROS, это набор готовых инструментов и библиотек для быстрого прототипирования, позволяющий склеивать &lt;del&gt;не всегда успешно&lt;&#x2F;del&gt; в единую систему множество разнородных пакетов.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;opyt-uchastnikov-predydushchikh-let&quot;&gt;Опыт участников предыдущих лет&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#opyt-uchastnikov-predydushchikh-let&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про то, из чего вообще состоял проект (много реп) и как код разворачивали на роботах --&gt;
+&lt;p&gt;Опыт команды RESET таков, что из примерно десяти человек, четверо занимаются написанием кода для роботов. Есть еще механики и электронщики, но статья не про них. В команде 4 программиста потому что есть 4 основных направления разработки:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Behavior Tree&lt;&#x2F;strong&gt; (BT): стратегия, принятие решений на поле. Это направление отдали мне.&lt;&#x2F;li&gt;
+&lt;li&gt;&lt;strong&gt;Локализация&lt;&#x2F;strong&gt;: работа с лидаром и одометрией.&lt;&#x2F;li&gt;
+&lt;li&gt;&lt;strong&gt;Навигация&lt;&#x2F;strong&gt;: обработка данных с локализации, передвижение робота по полю.&lt;&#x2F;li&gt;
+&lt;li&gt;&lt;strong&gt;Компьютерное зрение&lt;&#x2F;strong&gt;.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;До 2022 года каждый программист команды RESET писал свои ROS пакеты в отдельном репозитории. Все репозитории хранились на GitLab и клонировались на роботов. На роботах использовались &lt;code&gt;*.sh&lt;&#x2F;code&gt; скрипты, при помощи которых происходила компиляция и синхронный запуск всех пакетов.&lt;&#x2F;p&gt;
+&lt;p&gt;Ребята активно использовали этот подход и сталкивались со следующими проблемами:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Конфликты зависимостей&lt;&#x2F;strong&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;Версии библиотек в одних ROS пакетах могли конфликтовать с версиями библиотек из других. Ничто не мешало сломать чужой код, даже не меняя его. Достаточно было просто обновить какую-нибудь библиотеку.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Невоспроизводимость (irreproducibility)&lt;&#x2F;strong&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;Никто не может гарантировать что после переустановки системы тот же самый набор пакетов будет работать как раньше.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Время билда&lt;&#x2F;strong&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;Код на C++ отдельно билдится на компах участников, а после попадания на робота этот же код билдится заново уже на роботе. Роботом в момент компиляции пользоваться нельзя.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h2 id=&quot;trigger-izmenenii&quot;&gt;Триггер изменений&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#trigger-izmenenii&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про предложение использовать докер и первичные причины, по которым хотелось его использовать --&gt;
+&lt;p&gt;В 2022 году один из наставников предложил изменить подход к разработке и попробовать запускать код на роботе в Docker контейнерах. В тот год в команду RESET как раз пришел айтишник (это я).&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;tom-meme.jpeg&quot; alt=&quot;Я в этом шарю&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;em&gt;Ребята, я в этом шарю&lt;&#x2F;em&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;p&gt;Я уже не помню, почему изначально наставник предлагал перейти на Docker. Это уже не так важно. Важно, что практика деплоя с Docker внедрена в айтишке повсеместно. Вы не найдете сейчас ни одного бэкендера, который бы не упаковывал свои приложения в образы.&lt;&#x2F;p&gt;
+&lt;p&gt;Образы это круто:&lt;&#x2F;p&gt;
+&lt;ul&gt;
+&lt;li&gt;Вы вообще исключаете проблемы с воспроизводимостью. Если упакованное приложение работает у вас на компьютере, то и на другой машине оно заработает.&lt;&#x2F;li&gt;
+&lt;li&gt;Вы не паритесь даже по поводу ОС, на которой будет запущено ваше приложение. Для запуска упакованного приложения нужен только установленный Docker.&lt;&#x2F;li&gt;
+&lt;li&gt;Приложения легко доставлять до конечной машины, на которой оно будет запущено.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;p&gt;По факту, любой робот, это тот же самый бэкенд, только находящийся физически рядом. Так почему бы не применить практики деплоя на бэкенд в робототехнике?&lt;&#x2F;p&gt;
+&lt;p&gt;В общем, так мы и начали путешествие от сохи к ракете.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;docker-cover.png&quot; alt=&quot;Cover&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h1 id=&quot;perekhodim-na-docker&quot;&gt;Переходим на Docker&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#perekhodim-na-docker&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;monorepo-screenshot.png&quot; alt=&quot;Monorepo screenshot&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h2 id=&quot;struktura-repozitoriia&quot;&gt;Структура репозитория&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#struktura-repozitoriia&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про то, как перешли на монорепу, какую структуру заложили в нее, какие преимущества и недостатки --&gt;
+&lt;p&gt;Прежде всего, мы перенесли все 4 направления разработки в монорепозий. Это не было обязательно, просто в одном репозитории мне было проще организовать процесс сборки и тестирования кода.&lt;&#x2F;p&gt;
+&lt;p&gt;Примерная структура репозитория получилась следующей:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;sh&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-sh &quot;&gt;&lt;code class=&quot;language-sh&quot; data-lang=&quot;sh&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;bt&#x2F; &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# behavior tree
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; src&#x2F;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;│&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  ├─ ros_package_1&#x2F;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;│&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  ├─ ros_package_2&#x2F;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; Dockerfile
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;communication&#x2F; &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# для связи с STM32
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; src&#x2F;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;│&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  ├─ ...
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; Dockerfile
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;localization&#x2F; &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# локализация
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; src&#x2F;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;│&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  ├─ ...
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; Dockerfile
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;navigation&#x2F; &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# навигация
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; src&#x2F;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;│&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  ├─ ...
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; Dockerfile
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;common&#x2F; &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# общий код
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;├─&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; src&#x2F;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;│&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  ├─ ...
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Были созданы директории под каждое направление разработки. Назвали мы эти директории воркспейсами (workspace). Название выбрано не случайно, каждая директория это &lt;a href=&quot;https:&#x2F;&#x2F;docs.ros.org&#x2F;en&#x2F;foxy&#x2F;Tutorials&#x2F;Beginner-Client-Libraries&#x2F;Creating-A-Workspace&#x2F;Creating-A-Workspace.html&quot;&gt;Colcon Workspace&lt;&#x2F;a&gt;. Это значит, что:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;В &lt;code&gt;&amp;lt;workspace_name&amp;gt;&#x2F;src&#x2F;&lt;&#x2F;code&gt; можно класть пакеты ROS.&lt;&#x2F;li&gt;
+&lt;li&gt;Находясь в директории &lt;code&gt;&amp;lt;workspace_name&amp;gt;&#x2F;&lt;&#x2F;code&gt; можно билдить все пакеты при помощи &lt;code&gt;colcon build&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h2 id=&quot;sborka-koda-vorkspeisov-vo-vremia-razrabotki&quot;&gt;Сборка кода воркспейсов во время разработки&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#sborka-koda-vorkspeisov-vo-vremia-razrabotki&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про то, как собирался код воркспейсов во время разработки и отладки --&gt;
+&lt;p&gt;Без Docker в целом все обыденно: из под Ubuntu с установленным ROS2 Humble, клонируете себе репозиторий, идете в свой воркспейс и открываете в VS Code те пакеты, с которыми сейчас работаете.&lt;&#x2F;p&gt;
+&lt;p&gt;Если ваш воркспейс зависит от пакетов из &lt;code&gt;common&#x2F;&lt;&#x2F;code&gt;, нужно сначала сбилдить воркспейс &lt;code&gt;common&#x2F;&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;dockerfile-dlia-vorkspeisa&quot;&gt;Dockerfile для воркспейса&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#dockerfile-dlia-vorkspeisa&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про структуру докерфайла в каждом воркспейсе --&gt;
+&lt;p&gt;Из каждого воркспейса будет собираться один Docker образ, для этого в корне каждого воркспейса есть &lt;code&gt;Dockerfile&lt;&#x2F;code&gt;. Структура этого файла во всех воркспейсах одинаковая и состоит из пяти блоков:&lt;&#x2F;p&gt;
+&lt;pre data-linenos data-lang=&quot;Dockerfile&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-Dockerfile &quot;&gt;&lt;code class=&quot;language-Dockerfile&quot; data-lang=&quot;Dockerfile&quot;&gt;&lt;table&gt;&lt;tbody&gt;&lt;tr&gt;&lt;td&gt;1&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 1: Наследуемся от готового ROS образа версии Humble
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;2&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;FROM&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ros:humble-ros-core
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;3&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;4&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 2: Общие для всех воркспейсов внешние зависимости
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;5&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;RUN &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;apt update &amp;amp;&amp;amp; apt install -y ...
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;6&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;7&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 3: Специфичные для воркспейса внешние зависимости
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;8&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;RUN &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;apt update &amp;amp;&amp;amp; apt install -y ...
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;9&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;RUN &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;pip3 install setuptools black pytest pygame
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;10&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;11&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 4: Расшаривание общего кода между воркспейсами
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;12&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;COPY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; common&#x2F;src&#x2F;eurobot_interfaces &#x2F;root&#x2F;dependencies&#x2F;eurobot_interfaces
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;13&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;COPY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; sh&#x2F;ci&#x2F;deps.sh &#x2F;tmp&#x2F;.deploy_cache&#x2F;deps.sh
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;14&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;RUN &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;bash &#x2F;tmp&#x2F;.deploy_cache&#x2F;deps.sh
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;15&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;16&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 5: Сборка пакетов воркспейса
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;17&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;ENV &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;EUROBOT_KIND=bt
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;18&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;COPY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; $EUROBOT_KIND&#x2F;src &#x2F;tmp&#x2F;.deploy_cache&#x2F;src
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;19&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;COPY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; sh&#x2F;ci&#x2F;deploy.sh &#x2F;tmp&#x2F;.deploy_cache&#x2F;deploy.sh
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;20&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;ARG &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;DEPLOY
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;tr&gt;&lt;td&gt;21&lt;&#x2F;td&gt;&lt;td&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;RUN &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;bash &#x2F;tmp&#x2F;.deploy_cache&#x2F;deploy.sh
+&lt;&#x2F;span&gt;&lt;&#x2F;td&gt;&lt;&#x2F;tr&gt;&lt;&#x2F;tbody&gt;&lt;&#x2F;table&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;В наших докерфайлах слои расположены в порядке возрастания по частоте их редактирования, потому что &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;build&#x2F;cache&#x2F;&quot;&gt;если меняются нижние слои, то будут пересобраны все слои, находящиеся выше&lt;&#x2F;a&gt;. Самые последние слои редактируются максимально часто, но они настолько легковесные, что это не занимает много времени.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;blok-1-fiksiruem-versiiu-bazovogo-obraza&quot;&gt;Блок 1: Фиксируем версию базового образа&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#blok-1-fiksiruem-versiiu-bazovogo-obraza&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Для простоты и экономии места я написал, что мы наследуемся от образа &lt;code&gt;ros:humble-ros-core&lt;&#x2F;code&gt;, но это только наполовину правда. В ходе работы мы заметили что этот образ часто получал обновления, что приводило к полной пересборке наших образов с нуля. Поэтому мы зафиксировали версию образа вот так:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;Dockerfile&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-Dockerfile &quot;&gt;&lt;code class=&quot;language-Dockerfile&quot; data-lang=&quot;Dockerfile&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;## `ros:humble-ros-core` from Dec 9, 2022: https:&#x2F;&#x2F;github.com&#x2F;docker-library&#x2F;repo-info&#x2F;commit&#x2F;f150644a260b5a28
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;FROM&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ros@sha256:23aa104a31990bb6952f2836cbf431535ae53490d587a70b32e0ed94a9a4fd83
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Это плохая практика при написании приложений для прода, но у нас тут соревновательная робототехника, &lt;del&gt;так что пiхуй&lt;&#x2F;del&gt;.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;blok-2-obshchie-dlia-vsekh-vorkspeisov-vneshnie-zavisimosti&quot;&gt;Блок 2: Общие для всех воркспейсов внешние зависимости&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#blok-2-obshchie-dlia-vsekh-vorkspeisov-vneshnie-zavisimosti&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Следующим слоем после &lt;code&gt;FROM&lt;&#x2F;code&gt; идет установка пакетов из &lt;code&gt;apt&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 2: Общие для всех воркспейсов внешние зависимости
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;RUN&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; apt update &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;apt&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; install&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt; -y &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    git \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    cmake \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    build-essential \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    python3-pip \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    python3-colcon-common-extensions \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    ros-$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROS_DISTRO&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;-rmw-cyclonedds-cpp
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Мы просто копипастили это во все докерфайлы. Хотя вполне можно было сделать свой базовый образ, зафиксировав так версию &lt;code&gt;ros:humble-ros-core&lt;&#x2F;code&gt; и первый слой с общими зависимостями. Я просто вовремя не додумался до этого. &lt;&#x2F;p&gt;
+&lt;p&gt;Одинаковые слои это такая &amp;quot;оптимизация&amp;quot; — если слой общий у всех докерфайлов, то он будет собираться только один раз и переиспользоваться для всех воркспейсов. &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;build&#x2F;cache&#x2F;&quot;&gt;Docker использует ранее собранные слои&lt;&#x2F;a&gt;, что значительно ускоряет процесс сборки. В этот слой я поместил самые тяжелые зависимости: инструменты для сборки кода и кастомный DDS.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;blok-3-spetsifichnye-dlia-vorkspeisa-vneshnie-zavisimosti&quot;&gt;Блок 3: Специфичные для воркспейса внешние зависимости&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#blok-3-spetsifichnye-dlia-vorkspeisa-vneshnie-zavisimosti&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Следующие два слоя, это установка пакетов из &lt;code&gt;apt&lt;&#x2F;code&gt; и &lt;code&gt;pip&lt;&#x2F;code&gt;. Вынес &lt;code&gt;pip&lt;&#x2F;code&gt; в отдельный слой, потому что &lt;code&gt;pip&lt;&#x2F;code&gt; часто выдавал ошибки и руинил весь билд.&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 3: Специфичные для воркспейса внешние зависимости
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;RUN&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; apt update &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;apt&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; install&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt; -y &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    ros-$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROS_DISTRO&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;-behaviortree-cpp-v3 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    python3-tk \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;apt&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; autoremove &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# colored prompt
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;sed -i &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;#39;s&#x2F;#force_color_prompt=yes&#x2F;force_color_prompt=yes&#x2F;g&amp;#39; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;~&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;.bashrc &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# ROS source
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;source &#x2F;opt&#x2F;ros&#x2F;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROS_DISTRO&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&#x2F;setup.bash&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;gt;&amp;gt; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;~&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;.bashrc
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;RUN&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; pip3 install setuptools black pytest pygame
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Также в слой с установкой я поместил запись &lt;code&gt;source &#x2F;opt&#x2F;ros&#x2F;$ROS_DISTRO&#x2F;setup.bash&lt;&#x2F;code&gt; в файл &lt;code&gt;.bachrc&lt;&#x2F;code&gt;, для того чтобы при открытии bash внутри контейнера у нас &lt;a href=&quot;https:&#x2F;&#x2F;answers.ros.org&#x2F;question&#x2F;251292&#x2F;why-to-use-source-develsetupbash&#x2F;&quot;&gt;сразу регистрировалось окружение&lt;&#x2F;a&gt;, нужное для запуска бинарей ros.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;blok-4-rassharivanie-obshchego-koda-mezhdu-vorkspeisami&quot;&gt;Блок 4: Расшаривание общего кода между воркспейсами&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#blok-4-rassharivanie-obshchego-koda-mezhdu-vorkspeisami&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;!-- Тут рассказать про расшаривание воркспейса `common` между другими воркспейсами и почему это не самое плохое решение с точки зрения ROS --&gt;
+&lt;p&gt;В директории &lt;code&gt;common&#x2F;&lt;&#x2F;code&gt; нет своего &lt;code&gt;Dockerfile&lt;&#x2F;code&gt; потому что мы не собирали из него отдельный образ. Вместо этого мы хранили в нем общие на весь проект пакеты ROS. В докерфайлах других воркспейсов мы просто копировали нужные пакеты в &lt;code&gt;&#x2F;root&#x2F;dependencies&lt;&#x2F;code&gt; образа. В примере ниже копируется только пакет &lt;code&gt;eurobot_interfaces&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 4: Расшаривание общего кода между воркспейсами
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;COPY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; common&#x2F;src&#x2F;eurobot_interfaces &#x2F;root&#x2F;dependencies&#x2F;eurobot_interfaces
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;COPY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; sh&#x2F;ci&#x2F;deps.sh &#x2F;tmp&#x2F;.deploy_cache&#x2F;deps.sh
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;RUN&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; bash &#x2F;tmp&#x2F;.deploy_cache&#x2F;deps.sh
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;После копирования запускается скрипт &lt;code&gt;deps.sh&lt;&#x2F;code&gt;, который устанавливает пакеты внутри образа:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;sh&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-sh &quot;&gt;&lt;code class=&quot;language-sh&quot; data-lang=&quot;sh&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;#!&#x2F;bin&#x2F;bash
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;source&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;opt&#x2F;ros&#x2F;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROS_DISTRO&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;setup.bash &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;exit&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; 1
+&lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# build dependencies if needed
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;if &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;[ &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;-d&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;root&#x2F;dependencies &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;]&lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;then
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;cd&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;root&#x2F;dependencies
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;colcon&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; build&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt; --symlink-install &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;exit&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; 1
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;source &#x2F;root&#x2F;dependencies&#x2F;install&#x2F;setup.bash&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;gt;&amp;gt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;~&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;.bashrc
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;fi
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Логика у скрипта простая: если есть директория &lt;code&gt;&#x2F;root&#x2F;dependencies&lt;&#x2F;code&gt;, запускаем в ней &lt;code&gt;colcon build&lt;&#x2F;code&gt; и &lt;a href=&quot;https:&#x2F;&#x2F;answers.ros.org&#x2F;question&#x2F;251292&#x2F;why-to-use-source-develsetupbash&#x2F;&quot;&gt;регистрируем результаты сборки в окружении&lt;&#x2F;a&gt; при помощи &lt;code&gt;source&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;blok-5-sborka-paketov-vorkspeisa&quot;&gt;Блок 5: Сборка пакетов воркспейса&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#blok-5-sborka-paketov-vorkspeisa&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Последними слоями в наших образах являются результаты сборки уже наших собственных, специфичных для воркспейса пакетов. Переменная окружения &lt;code&gt;EUROBOT_KIND&lt;&#x2F;code&gt; с названием воркспейса используется дальше в скриптах.&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Блок 5: Сборка пакетов воркспейса
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ENV&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; EUROBOT_KIND=bt
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;COPY &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;EUROBOT_KIND&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;src &#x2F;tmp&#x2F;.deploy_cache&#x2F;src
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;COPY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; sh&#x2F;ci&#x2F;deploy.sh &#x2F;tmp&#x2F;.deploy_cache&#x2F;deploy.sh
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ARG&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; DEPLOY
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;RUN&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; bash &#x2F;tmp&#x2F;.deploy_cache&#x2F;deploy.sh
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;В образ копируется содержимое воркспейса и запускается скрипт &lt;code&gt;deploy.sh&lt;&#x2F;code&gt;, который собирает и устанавливает наши пакеты:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;sh&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-sh &quot;&gt;&lt;code class=&quot;language-sh&quot; data-lang=&quot;sh&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;#!&#x2F;bin&#x2F;bash
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PROJECT_DIR&lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;&#x2F;root&#x2F;eurobot_main&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PACKAGE_DIR&lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PROJECT_DIR&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&#x2F;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;EUROBOT_KIND
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;function &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5cb3fa;&quot;&gt;cleanup&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;() {
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;rm -rf&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;tmp&#x2F;.deploy_cache &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp;&amp;gt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;dev&#x2F;null
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;trap&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; cleanup EXIT
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;case &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;DEPLOY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;in
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;ci&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;)
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;Deploying package in the cloud... &amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;git&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; clone \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;        --branch&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; master \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;        --depth&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; 1 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;        https:&#x2F;&#x2F;...@gitlab.com&#x2F;reset_eurobot2023&#x2F;eurobot_main.git \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;        &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PROJECT_DIR&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;exit&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; 1
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    ;;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;local&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;)
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;Deploying package locally... &amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;[ &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;-d &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PACKAGE_DIR&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;src &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;] &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;mkdir -p &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PACKAGE_DIR&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;src
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;cp -R&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;tmp&#x2F;.deploy_cache&#x2F;src $&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PACKAGE_DIR &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;exit&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; 1
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    ;;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;*&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;)
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;Skip deploying package&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;exit&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; 0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    ;;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;esac
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;source&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;opt&#x2F;ros&#x2F;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROS_DISTRO&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;setup.bash &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;exit&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; 1
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;[ &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;-f&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;root&#x2F;dependencies&#x2F;install&#x2F;setup.bash &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;] &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;source&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;root&#x2F;dependencies&#x2F;install&#x2F;setup.bash
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;cd &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PACKAGE_DIR
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;colcon&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; build&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt; --symlink-install &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;exit&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; 1
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;source $&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PACKAGE_DIR&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&#x2F;install&#x2F;setup.bash&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;gt;&amp;gt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;~&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;.bashrc
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;Package deployed!&amp;quot;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;У этого скрипта логика сложнее, чем у предыдущего. Здесь, в зависимости от переданного в docker аргумента &lt;code&gt;--build-arg DEPLOY=...&lt;&#x2F;code&gt; будет разное поведение:&lt;&#x2F;p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;Если &lt;code&gt;DEPLOY&lt;&#x2F;code&gt; равен &lt;code&gt;&amp;quot;ci&amp;quot;&lt;&#x2F;code&gt;, то скрипт загрузит последнюю версию кода из репозитория и соберет ее. Этот функционал использовался для сборки &amp;quot;релизных&amp;quot; образов для публикации в наш Docker Registry.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;Если &lt;code&gt;DEPLOY&lt;&#x2F;code&gt; равен &lt;code&gt;&amp;quot;local&amp;quot;&lt;&#x2F;code&gt;, то скрипт брал тот код воркспейса, который был скопирован в него изначально, и собирал его. При локальных сборках образа использовался именно этот способ.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;Для всех других значений переменной &lt;code&gt;DEPLOY&lt;&#x2F;code&gt; никакой код не собирался. Эта опция использовалась для того чтобы подготовить образ, который можно использовать как &lt;a href=&quot;https:&#x2F;&#x2F;code.visualstudio.com&#x2F;docs&#x2F;devcontainers&#x2F;containers&quot;&gt;VS Code Dev Container&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;h2 id=&quot;prevrashchaem-vorkspeis-v-docker-obraz&quot;&gt;Превращаем воркспейс в Docker образ&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#prevrashchaem-vorkspeis-v-docker-obraz&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про то, как проходит процесс сборки воркспейса в Docker образ --&gt;
+&lt;p&gt;Мы пользовались мета-системой сборки &lt;strong&gt;bldr&lt;&#x2F;strong&gt;, которые позволяла собирать образы для любых воркспейсов одной командой. Команды запускались из корня репозитория примерно вот так:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;.&#x2F;bldr&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; build navigation
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Про сам &lt;strong&gt;bldr&lt;&#x2F;strong&gt; расскажу позднее. При вызове команды выше под капотом запускался примерно такой код:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;sh&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-sh &quot;&gt;&lt;code class=&quot;language-sh&quot; data-lang=&quot;sh&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildx build \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --platform &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;linux&#x2F;amd64&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --output &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;type=docker&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --tag &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;eurobot2023:navigation&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --build-arg&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; DEPLOY=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;local&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --file&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; navigation&#x2F;Dockerfile \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    .
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Использовался Docker BuildKit, потому что мы билдили и на ARM, и на x86 компьютераз. Docker позволяет собирать &lt;a href=&quot;https:&#x2F;&#x2F;www.docker.com&#x2F;blog&#x2F;how-to-rapidly-build-multi-architecture-images-with-buildx&#x2F;&quot;&gt;образы под любую архитектуру&lt;&#x2F;a&gt;. В качестве контекста сборки использовался корень репозитория (&lt;code&gt;.&lt;&#x2F;code&gt;), чтобы можно было копировать пакеты из &lt;code&gt;common&#x2F;&lt;&#x2F;code&gt; воркспейса.&lt;&#x2F;p&gt;
+&lt;p&gt;Если у вас больше одного ROS пакета в воркспейсе и они написаны на C++, придется смириться с тем фактом, что все они будут пересобираться во время каждого билда, даже если изменения вы внесли всего в один. Да, при таком подходе билд-кэш для С++ завести нельзя, но нам до дня соревнований хватало и этого.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;otpravka-obrazov-na-robotov&quot;&gt;Отправка образов на роботов&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#otpravka-obrazov-na-robotov&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Эта часть слишком большая, оставить ссылку на следующую статью --&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;sending-containers-to-robot.png&quot; alt=&quot;Sending containers to Robot&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;p&gt;Иногда мы использовали Docker Hub для публикации и скачивания наших образов, но в 99% случаев деплоили по локальной сети, избегая публикации в интернете.&lt;&#x2F;p&gt;
+&lt;p&gt;К сожалению, для того чтобы рассказать, как я смог этого добиться, нужно такая же по объему статья. Поэтому просто скажу что работало это как черная магия: без вмешательства разработчиков, супер быстро и требовало ввода всего одной команды. Все были довольны. Готовлю статью на эту тему.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;zapusk-konteinerov-na-robote&quot;&gt;Запуск контейнеров на роботе&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#zapusk-konteinerov-na-robote&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про запуск докера из терминала путем вызова docker run --&gt;
+&lt;p&gt;Классический запуск контейнера происходит через вызов &lt;code&gt;docker run&lt;&#x2F;code&gt;. Мы успешно пропустили этот этап и перешли на Docker Compose, потому что я с самого начала знал, что нужно будет:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Запускать несколько контейнеров.&lt;&#x2F;li&gt;
+&lt;li&gt;Соблюсти порядок запуска контейнеров.&lt;&#x2F;li&gt;
+&lt;li&gt;Передавать кучу параметров в каждый контейнер, а делать это вручную нереально.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;Чтобы проиллюстрировать третью причину, представляю вашему вниманию запуск контейнера с behavior tree на борту со всеми параметрами:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; run \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ROBOT_NAME=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_NAME&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; COMPANION_ROBOT_NAME=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;COMPANION_ROBOT_NAME&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; CYCLONEDDS_URI=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;&amp;lt;CycloneDDS&amp;gt;&amp;lt;Domain&amp;gt;&amp;lt;General&amp;gt;&amp;lt;NetworkInterfaceAddress&amp;gt;${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;WLAN_DEVICE_NAME&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;}&amp;lt;&#x2F;NetworkInterfaceAddress&amp;gt;&amp;lt;&#x2F;General&amp;gt;&amp;lt;&#x2F;Domain&amp;gt;&amp;lt;&#x2F;CycloneDDS&amp;gt;&amp;quot; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; BT_FILENAME=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;BT_FILENAME&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ENEMIES=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ENEMIES&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; BT_FREQ=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;BT_FREQ&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; PLATE_NUMBER=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PLATE_NUMBER&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; SIX_BEACONS=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;SIX_BEACONS&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; STOLEN_CAKE_COST=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;STOLEN_CAKE_COST&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; DEBUG=true \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; SORT_CAKES=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;SORT_CAKES&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; COLLECT_CHERRIES=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;COLLECT_CHERRIES&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -e&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; STEAL_CAKE=${&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;STEAL_CAKE&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;} \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --network&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; host \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --privileged &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --name&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; bt \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -v ~&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;eurobot_main&#x2F;strategies:&#x2F;strategies \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -v&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; &#x2F;etc:&#x2F;etc \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    eurobot2023:bt \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &#x2F;bin&#x2F;bash&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt; -c &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        source &#x2F;etc&#x2F;eurobot_config.sh
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        source &#x2F;root&#x2F;eurobot_main&#x2F;bt&#x2F;install&#x2F;setup.bash
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        ros2 launch superbt bt_node.launch.py
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;    &amp;quot;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Мы в итоге запускали 6 контейнеров, так что запуск руками или через sh скрипты нам не не подходит.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;srazu-na-novyi-uroven-docker-compose&quot;&gt;Сразу на новый уровень: Docker Compose&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#srazu-na-novyi-uroven-docker-compose&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про docker-compose --&gt;
+&lt;p&gt;Для того чтоб удовлетворить все требования под предыдущим заголовком, я решил использовать Docker Compose — самый простой инструмент, который был доступен на момент подготовки к соревнованиям.&lt;&#x2F;p&gt;
+&lt;p&gt;У меня уже был опыт работы с ним во время разработки бэкенда для MpeiX, поэтому взял именно его. А на роботах больше и не нужно.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;pishem-docker-compose-yaml&quot;&gt;Пишем docker-compose.yaml&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#pishem-docker-compose-yaml&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Вся конфигурация наших воркспейсов и вся инфа о порядке запуска описывается в единственном файле: &lt;code&gt;docker-compose.yaml&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;p&gt;Все свои ROS ноды мы писали так, чтобы их можно было настраивать через переменные окружения, поэтому переменных окружения у нас использовалось много:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;yaml&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-yaml &quot;&gt;&lt;code class=&quot;language-yaml&quot; data-lang=&quot;yaml&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;version&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;#39;3&amp;#39;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;services&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;:
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;stm&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;...
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;launcher&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;...
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;bt&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;:
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;image&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;eurobot2023:bt
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;container_name&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;bt&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;privileged&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;true
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;network_mode&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;host
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;environment&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;:
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;ROBOT_NAME=${ROBOT_NAME}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;COMPANION_ROBOT_NAME=${COMPANION_ROBOT_NAME}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;CYCLONEDDS_URI=&amp;lt;CycloneDDS&amp;gt;&amp;lt;Domain&amp;gt;&amp;lt;General&amp;gt;&amp;lt;NetworkInterfaceAddress&amp;gt;${WLAN_DEVICE_NAME}&amp;lt;&#x2F;NetworkInterfaceAddress&amp;gt;&amp;lt;&#x2F;General&amp;gt;&amp;lt;&#x2F;Domain&amp;gt;&amp;lt;&#x2F;CycloneDDS&amp;gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# BtNode Settings
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;BT_FILENAME=${BT_FILENAME}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;ENEMIES=${ENEMIES}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;BT_FREQ=${BT_FREQ}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;PLATE_NUMBER=${PLATE_NUMBER}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;SIX_BEACONS=${SIX_BEACONS}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;STOLEN_CAKE_COST=${STOLEN_CAKE_COST}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;DEBUG=true
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# BT feature toggles
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;SORT_CAKES=${SORT_CAKES}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;COLLECT_CHERRIES=${COLLECT_CHERRIES}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;STEAL_CAKE=${STEAL_CAKE}
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;command&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#cd74e8;&quot;&gt;|
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;      &#x2F;bin&#x2F;bash -c &amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        source &#x2F;etc&#x2F;eurobot_config.sh
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        source &#x2F;root&#x2F;eurobot_main&#x2F;bt&#x2F;install&#x2F;setup.bash
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        ros2 launch superbt bt_node.launch.py
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;      &amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;volumes&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;:
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;~&#x2F;eurobot_main&#x2F;strategies:&#x2F;strategies
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;      - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&#x2F;etc:&#x2F;etc
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;localization&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;...
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;navigation&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;...
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;display&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;: &lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;...
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Для приложений обязательно указывать &lt;code&gt;network_mode: host&lt;&#x2F;code&gt;, чтобы за пределами контейнеров работало обнаружение топиков и других сетевых сущностей. Опцию &lt;code&gt;privileged: true&lt;&#x2F;code&gt; указывать не обязательно, она нужна только для контейнера &lt;code&gt;stm&lt;&#x2F;code&gt; для обмена данными с микроконтроллером через USB-UART.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;zapuskaem-vse-konteinery&quot;&gt;Запускаем все контейнеры&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#zapuskaem-vse-konteinery&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Чтобы запустить все контейнеры и подключиться к их выводу, достаточно запустить:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; compose up
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Дальше работа со всеми ROS приложениями происходит точно так же, как и с любыми приложениями, упакованными в Docker. Поэтому все программисты освоили основные команды для работы с Docker Compose и спокойно запускали и останавливали роботов самостоятельно.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;ispol-zovanie-env-faila&quot;&gt;Использование &lt;code&gt;.env&lt;&#x2F;code&gt; файла&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#ispol-zovanie-env-faila&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;!-- Тут рассказать про то, как не редачить постоянно docker-compose.yaml --&gt;
+&lt;p&gt;В каждый контейнер передается целая куча параметров через переменные окружения. Сначала мы прописывали их руками прямо в &lt;code&gt;docker-compose.yaml&lt;&#x2F;code&gt;, но потом начали испрользовать &lt;code&gt;.env&lt;&#x2F;code&gt; файл. В итоге мы вынесли все значимые параметры для запуска роботов в &lt;code&gt;.env&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;toml&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-toml &quot;&gt;&lt;code class=&quot;language-toml&quot; data-lang=&quot;toml&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;#commons
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PLATE_NUMBER&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;3
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;SIX_BEACONS&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;false
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# behavior tree
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;BT_FILENAME&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;no_brown_for_all.xml&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ENEMIES&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;2 4&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;STOLEN_CAKE_COST&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;10
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;BT_FREQ&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;10
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;SORT_CAKES&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;true
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;COLLECT_CHERRIES&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;true
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;STEAL_CAKE&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;true
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# navigation
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;CAKE_RADIUS&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;6.0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_RADIUS&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;18.0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_RADIUS_WITH_CAKE&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;20.0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ENEMY_RADIUS&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;24.0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;SAFE_DISTANCE_ROBOTS&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;4.0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;SAFE_DISTANCE_OBJECTS&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;2.0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;MAX_LINEAR_VELO&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;0.8
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;MAX_LINEAR_VELO_CV_ONLY&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;0.5
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;MAX_ANGULAR_VELO&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;2.1
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;MOCK_CAKES&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;false
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# localization
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;PARTICLE_COUNT&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;=&lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;10000
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Согласитесь, выглядит приятнее, чем простыня в &lt;code&gt;docker-compose.yaml&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;h1 id=&quot;podvodnye-kamni&quot;&gt;Подводные камни&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#podvodnye-kamni&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;h2 id=&quot;net-gotovykh-instrumentov-dlia-razrabotchikov&quot;&gt;Нет готовых инструментов для разработчиков&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#net-gotovykh-instrumentov-dlia-razrabotchikov&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;Docker это супер крутая штука, когда ты умеешь им пользоваться. Но наша команда почти целиком состояла из людей, никогда не работавших с Docker, а в ROS все разбирались на начальном уровне.&lt;&#x2F;p&gt;
+&lt;p&gt;Я потратил много недель чтобы выкатить решение, скрывающее большинство подробностей работы с Docker за простым интерфейсом. И еще несколько месяцев я его полировал опираясь на фидбек от команды. В результате этой работы родилась мета-билд система &lt;strong&gt;bldr&lt;&#x2F;strong&gt;, заточенная под билд и деплой докеризованных ROS приложений. Она была выстрадана ради того чтоб мы могли билдить образ любого воркспейса вот так:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;.&#x2F;bldr&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; build navigation
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Или устанавливать образ любого воркспейса на робота вот так:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;.&#x2F;bldr&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; install localization
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;bldr-demo-1.png&quot; alt=&quot;Bldr Build System Screenshot 1&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;p&gt;В 2022 году команде повезло, что нашелся айтишник который это реализовал. Не факт что в следующем году повезет так же. К сожалению в интернете готовых решений нет, а сложность текущего решения очень высока. Для того чтобы наш опыт можно было переиспользовать, я полагаю, лучше не создавать yet another build system, а написать расширения для системы сборки &lt;a href=&quot;https:&#x2F;&#x2F;bazel.build&#x2F;&quot;&gt;Bazel&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;defoltnyi-dds-ne-mozhet-probit-sia-cherez-docker&quot;&gt;Дефолтный DDS не может пробиться через Docker&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#defoltnyi-dds-ne-mozhet-probit-sia-cherez-docker&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про проблемы с работой дефолтного DDS в сети Docker --&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Либо мы оказались недостаточно умными, чтобы его настроить.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;Мы очень много намучились с настройкой &lt;a href=&quot;https:&#x2F;&#x2F;docs.ros.org&#x2F;en&#x2F;humble&#x2F;Installation&#x2F;DDS-Implementations.html&quot;&gt;DDS в ROS&lt;&#x2F;a&gt;. Если объяснять коротко, то DDS это такой middleware, благодаря которому осуществляется общение через топики между нодами. Даже между нодами находящимися на разных машинах в одной локальной сети.&lt;&#x2F;p&gt;
+&lt;p&gt;Дефолтная реализация DDS, &lt;a href=&quot;https:&#x2F;&#x2F;docs.ros.org&#x2F;en&#x2F;humble&#x2F;Installation&#x2F;DDS-Implementations&#x2F;Working-with-eProsima-Fast-DDS.html&quot;&gt;eProsima Fast DDS&lt;&#x2F;a&gt;, включенная в редакцию ROS2 Humble, отказалась работать в среде Docker контейнеров. Мы регулярно сталкивались с тем что топики, публикуемые нашими нодами, были недоступны извне, за пределами Docker контейнеров. Они не были доступны даже внутри сети Docker.&lt;&#x2F;p&gt;
+&lt;p&gt;Путем долгих ковыряний и настроек мы смогли добиться того что топики худо-бедно работали между контейнерами и на локальной машине (роботе) за пределами контейнеров, но в локальной сети Wi-Fi другие машины не видели их. Это большая проблема так как у нас стратегия игры была завязана на возможности обмена данными между роботами. &lt;&#x2F;p&gt;
+&lt;p&gt;Итоговым решением, на котором мы остановились, стал переход на &lt;a href=&quot;https:&#x2F;&#x2F;docs.ros.org&#x2F;en&#x2F;humble&#x2F;Installation&#x2F;DDS-Implementations&#x2F;Working-with-Eclipse-CycloneDDS.html&quot;&gt;Eclipse Cyclone DDS&lt;&#x2F;a&gt;. Судя по бенчмаркам он не самый быстрый, но это имеет значение только когда пересылаешь данные больших объемов. У нас в команде не было людей пересылавших гигабайты данных через топики, а если бы и были, я бы дал им по рукам.&lt;&#x2F;p&gt;
+&lt;p&gt;Мы обнаружили, что при использовании Cyclone DDS могут общаться между собой ноды из ROS2 разной редакции. Так, например, наша вышка с камерой работала на ROS2 Foxy и отправляла данные нашим роботам, работающим на ROS2 Humble.&lt;&#x2F;p&gt;
+&lt;p&gt;Переход на Cyclone DDS отразился в &lt;code&gt;Dockerfile&lt;&#x2F;code&gt; и &lt;code&gt;docker-compose.yaml&lt;&#x2F;code&gt;. Мы добавили в зависимости всех воркспейсов пакет &lt;code&gt;ros-humble-rmw-cyclonedds-cpp&lt;&#x2F;code&gt;. А также указали переменные окружения для ROS.&lt;&#x2F;p&gt;
+&lt;p&gt;Дополнения для &lt;code&gt;Dockerfile&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Общие для всех воркспейсов внешние зависимости
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;RUN&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; apt update &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;apt&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; install&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt; -y &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    ... \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    ros-$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROS_DISTRO&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;-rmw-cyclonedds-cpp &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# &amp;lt;-- устанавливаем другой DDS
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;
+&lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# Меняем дефолтную реализацию DDS
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ENV&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ROS_DOMAIN_ID=0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ENV&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;В &lt;code&gt;docker-compose.yaml&lt;&#x2F;code&gt; мы также передавали для Cyclone DDS параметр &lt;code&gt;NetworkInterfaceAddress&lt;&#x2F;code&gt; с именем WLAN интерфейса:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;yaml&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-yaml &quot;&gt;&lt;code class=&quot;language-yaml&quot; data-lang=&quot;yaml&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;environment&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;:
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;  - &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;CYCLONEDDS_URI=&amp;lt;CycloneDDS&amp;gt;&amp;lt;Domain&amp;gt;&amp;lt;General&amp;gt;&amp;lt;NetworkInterfaceAddress&amp;gt;${WLAN_DEVICE_NAME}&amp;lt;&#x2F;NetworkInterfaceAddress&amp;gt;&amp;lt;&#x2F;General&amp;gt;&amp;lt;&#x2F;Domain&amp;gt;&amp;lt;&#x2F;CycloneDDS&amp;gt;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;h2 id=&quot;zabud-te-pro-legkovesnye-obrazy&quot;&gt;Забудьте про легковесные образы&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#zabud-te-pro-legkovesnye-obrazy&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;В прекрасном мире JVM и Rust я познакомился с базовыми образами от Alpine. Можно спокойно упаковать ваш микросервис в образ, который будет весить 20 мегабайт (5 мегабайт в сжатом виде).&lt;&#x2F;p&gt;
+&lt;p&gt;Ну так вот, с ROS про это пока можно забыть. Базовый образ ROS без всего лишнего в распакованном виде занимает примерно 700 мегабайт памяти на диске. Мы в свою очередь докинули еще пакеты типа &lt;code&gt;build-essential&lt;&#x2F;code&gt; и кастомного DDS, что добавило еще 300 мегабайт. Спасал только тот факт, что Docker образы состоят из слоев и нам не надо было каждый раз во время деплоя грузить гиг мусора на роботов. Мы загружали только верхние слои с нашими бинарями, которые весили от 10 до 50 мегабайт.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;heavy-images.png&quot; alt=&quot;Heavy Docker Images&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;p&gt;Может быть можно скомпилировать ROS под какой-то более легковесный дистрибутив Linux для распространения через Docker, но кто этим будет заниматься? У нас ведь не клуб юных линуксоведов.&lt;&#x2F;p&gt;
+&lt;h1 id=&quot;k-chemu-my-v-itoge-prishli&quot;&gt;К чему мы в итоге пришли&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#k-chemu-my-v-itoge-prishli&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;h2 id=&quot;podkhod-sebia-zarekomendoval&quot;&gt;Подход себя зарекомендовал&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#podkhod-sebia-zarekomendoval&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут перечислить список проблем из начала статьи и рассказать как они исчезли 
+--&gt;
+&lt;p&gt;Можно считать подход &amp;quot;ROS2 + Docker&amp;quot; обкатанным. Мы в итоге выступили на соревах и победили. Docker ни разу нас не подвел. Все неполядки, которые возникали, были из-за отвала механики, отвала электроники, неправильно написанной стратегии или багов ROS. Но Docker обеспечил нам полную идемпотентность запусков и четкий жизненный цикл наших ROS приложений.&lt;&#x2F;p&gt;
+&lt;p&gt;Не без труда, но мы избавились от всех проблем старого подхода:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Мы мобедили проблему с конфликтами зависимостей. Потому что ничего кроме Docker на роботах установлено не было. Все библиотеки теперь зашиты в Docker образы и используются контейнерами в изолированной среде. Обновление библиотек для одного воркспейса перестало затрагивать другие.&lt;&#x2F;li&gt;
+&lt;li&gt;Достигнута почти полная воспроизводимость запусков. Я пишу &amp;quot;почти&amp;quot;, потому что к сожалению робот работает в нашем физическом окружении, а оно всегда полно хаоса. Но мы как минимум знали, что если софт уже протестирован, то сам по себе он никогда не отвалится. Проблемы мог создать только рандом, физически возникающий на игровом поле.&lt;&#x2F;li&gt;
+&lt;li&gt;Со временем билда не все так гладко из-за того что я не смог организовать билд-кэш для С++ внутри Docker. Однако мы больше не компилировали на роботе, совсем. Весь билд происходил у нас на лэптопах&#x2F;ПК, после чего готовые Docker приложения отправлялись на робота. Самый прикол в том, что загружать обновления образов можно даже в тот момент, когда робот занят ездой по игровому полю.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h2 id=&quot;chto-mozhno-sdelat-luchshe&quot;&gt;Что можно сделать лучше&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#chto-mozhno-sdelat-luchshe&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Тут рассказать про проблемы, возникающие из-за использования Docker --&gt;
+&lt;h3 id=&quot;umen-shit-ves-obrazov&quot;&gt;Уменьшить вес образов&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#umen-shit-ves-obrazov&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Как я уже ранее писал, мы устанавливаем все билд-тулы в тот же образ, который потом отправляется на робота. Можно сэкономить 300-500 мегабайт при помощи &lt;a href=&quot;https:&#x2F;&#x2F;www.docker.com&#x2F;blog&#x2F;advanced-dockerfiles-faster-builds-and-smaller-images-using-buildkit-and-multistage-builds&#x2F;&quot;&gt;Docker Multistage Builds&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;p&gt;Проблема multistage сборок в том, что всей команде придется погружаться в Docker. У нас тут не кружок девопсов, а лаборатория робототехники, поэтому такое требование было бы расточительным по отношению к команде.&lt;&#x2F;p&gt;
+&lt;p&gt;Можно скрыть сложность multistage сборок за оберткой системы сборки...&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;organizovat-bild-kesh-dlia-c-paketov&quot;&gt;Организовать билд-кэш для C++ пакетов&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#organizovat-bild-kesh-dlia-c-paketov&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Ближе к соревнованиям воркспейс &lt;code&gt;navigation&#x2F;&lt;&#x2F;code&gt; настолько разросся, что каждый билд занимал по две минуты. &lt;del&gt;Разработчики C++ сейчас рассмеются.&lt;&#x2F;del&gt; В целом это терпимо, но каждый раз пересобирать даже неизменившиеся пакеты это расточительно, а на соревнованиях может даже бесить. Все остальное работало настолько стабильно, что время билда было единственной раздражающей вещью.&lt;&#x2F;p&gt;
+&lt;p&gt;Пока нет легальных способов вторгаться в окружение собирающегося Docker образа и помещать туда какие-то файлы. Чтобы &amp;quot;достингуть&amp;quot; состояния рабочего билд-кэша, нужно поменять логику сборки образов:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Нужно сначала собирать образ с установленными билд-тулами и всеми зависимостями.&lt;&#x2F;li&gt;
+&lt;li&gt;Запускать контейнер из такого образа и маунтить к нему директорию воркспейса.&lt;&#x2F;li&gt;
+&lt;li&gt;Внутри контейнера запускать билд. Colcon внутри контейнера будет использовать директорию воркспейса как build output, в том числе будет складывать в нее билд-кэш.&lt;&#x2F;li&gt;
+&lt;li&gt;После успешной сборки можно копировать результаты билда в этот же контейнер и делать коммит в новый образ. Либо копировать результаты билда в другой контейнер, без лишних зависимостей, предназначенный специально для деплоя, и коммитить его в новый образ.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;Как вы понимаете, если делать такое вручную 100 раз в день, можно &lt;del&gt;ебнуться&lt;&#x2F;del&gt; очень устать. Нужно чтобы все эти манипуляции выполняла система сборки.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;unifitsirovat-reshenie&quot;&gt;Унифицировать решение&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#unifitsirovat-reshenie&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Два предыдущих варианта улучшений невозможно реализовать без программирования сложной логики. Как я уже выше написал, возможно лучше написать новые &lt;a href=&quot;https:&#x2F;&#x2F;bazel.build&#x2F;&quot;&gt;Bazel&lt;&#x2F;a&gt; rules, а самих разработчиков научить нескольким командам Bazel, чем писать свою собственную систему сборки.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;chto-ia-ne-zatronul-v-stat-e&quot;&gt;Что я не затронул в статье&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#chto-ia-ne-zatronul-v-stat-e&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Заполнить после того как напишу статью --&gt;
+&lt;h3 id=&quot;otpravka-obrazov-na-robotov-1&quot;&gt;Отправка образов на роботов&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#otpravka-obrazov-na-robotov-1&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Изначально я хотел добавить в эту статью и рассказ про то, как проброс SSH тоннелей и кастомные Docker Registry помогают деплоить в локальной сети, но потом понял что это будет невозможно прочитать. Устройство скрипта, отправляющего образы на робота я опишу в отдельной статье и даже приложу рабочий код.&lt;&#x2F;p&gt;
+&lt;h3 id=&quot;meta-sistema-sborki&quot;&gt;Мета система сборки&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#meta-sistema-sborki&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Все описанное в статье было бы невозможно использовать без нашей системы сборки &lt;strong&gt;bldr&lt;&#x2F;strong&gt;. Мы реально в 99% случаев пользовались только ею. Но про нее я напишу отдельную статью.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;bldr-demo-2.png&quot; alt=&quot;Bldr Build System Screenshot 2&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h3 id=&quot;dev-konteinery&quot;&gt;Dev-контейнеры&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#dev-konteinery&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Мы использовали описанные тут подходы для того чтобы иногда разрабатывать прямо внутри Docker контейнеров. Для меня это было особенно важно, так как я писал софт для наших роботов в основном на Mac OS и Windows. Но это не относится напрямую к теме статьи, а статья и так большая.&lt;&#x2F;p&gt;
+&lt;h1 id=&quot;itog&quot;&gt;Итог&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#itog&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;p&gt;Деплоить на роботов с Docker реально. Подход обкатан и показал себя надежным. Единственная проблема пока только в отсутствии удобных инструментов, заточенных под эту специфическую задачу.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;eurobot-photo-2.jpg&quot; alt=&quot;Eurobot Photo 2&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+</content>
+        
+    </entry>
+</feed>

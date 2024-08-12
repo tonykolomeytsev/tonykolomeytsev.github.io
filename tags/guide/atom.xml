@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
+    <title>Kekmech Blog - guide</title>
+    <link href="https://tonykolomeytsev.github.io/tags/guide/atom.xml" rel="self" type="application/atom+xml"/>
+    <link href="https://tonykolomeytsev.github.io"/>
+    <generator uri="https://www.getzola.org/">Zola</generator>
+    <updated>2023-09-06T00:00:00+00:00</updated>
+    <id>https://tonykolomeytsev.github.io/tags/guide/atom.xml</id>
+    <entry xml:lang="en">
+        <title>Опыт Eurobot: Деплой Docker образов на роботов в локальной сети</title>
+        <published>2023-09-06T00:00:00+00:00</published>
+        <updated>2023-09-06T00:00:00+00:00</updated>
+        <author>
+          <name>Anton Kolomeytsev</name>
+        </author>
+        <link rel="alternate" href="https://tonykolomeytsev.github.io/posts/deploy-to-robots-with-docker/" type="text/html"/>
+        <id>https://tonykolomeytsev.github.io/posts/deploy-to-robots-with-docker/</id>
+        
+        <content type="html">&lt;p&gt;Продолжая серию постов про Eurobot, рассказываю про следующую деталь нашей инфраструктуры — доставку Docker образов до роботов в обход интернета и удаленных Docker Registry.&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;a href=&quot;&#x2F;posts&#x2F;eurobot-experience-docker-with-ros&#x2F;&quot;&gt;В предыдущем посте&lt;&#x2F;a&gt; я рассказал о том, как мы собирали Docker образы и как контейнеры запускались на роботах. В этот раз покажу, как эти самые образы по Wi-Fi доставлять с машин разработчиков на роботов.&lt;&#x2F;p&gt;
+&lt;p&gt;Для опытных бэкендеров скорее всего материал поста не будет новым. Для меня же большая часть описанного здесь в свое время стала откровением.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;deploying-app.jpg&quot; alt=&quot;Deploying Docker App&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;em&gt;Именно так выглядит деплой&lt;&#x2F;em&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h1 id=&quot;motivatsiia&quot;&gt;Мотивация&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#motivatsiia&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;p&gt;Во время подготовки к соревнованиям мы использовали как классический подход доставки образов, через Docker Hub, так и эзотерический — по локальной сети. &lt;&#x2F;p&gt;
+&lt;p&gt;Первый способ мы использовали в основном, загружая в Docker Hub стабильные образы, собранные из ветки master на CI в нашем репозитории. Мы точно знали что в публичном репозитории находятся рабочие образы и иногда откатывались к ним.&lt;&#x2F;p&gt;
+&lt;p&gt;По локальной сети же мы деплоили в 99% случаев, находясь физически в лабе и отлаживая роботов вечерами после пар.&lt;&#x2F;p&gt;
+&lt;p&gt;Таким образом, заливать образы минуя интернет я хотел по двум причинам: &lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Это тупо быстрее и удобнее.&lt;&#x2F;li&gt;
+&lt;li&gt;На соревнованиях, куда мы приедем, может не быть интернета или он может быть нестабилен.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h1 id=&quot;samoe-prostoe-reshenie&quot;&gt;Самое простое решение&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#samoe-prostoe-reshenie&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;!-- Тут рассказать про первое решение до которого я додумался, экспорт docker образа в tar архив и его отправка --&gt;
+&lt;p&gt;Первое решение, которое мне пришло в голову, &lt;a href=&quot;https:&#x2F;&#x2F;stackoverflow.com&#x2F;questions&#x2F;23935141&#x2F;how-to-copy-docker-images-from-one-host-to-another-without-using-a-repository&quot;&gt;пришло в голову кому-то еще до меня&lt;&#x2F;a&gt;. Заключалось решение в следующем:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Собираем Docker образ.&lt;&#x2F;li&gt;
+&lt;li&gt;Экспортируем образ в tar архив.&lt;&#x2F;li&gt;
+&lt;li&gt;Отправляем tar архив при помощи &lt;code&gt;rsync&lt;&#x2F;code&gt; или &lt;code&gt;scp&lt;&#x2F;code&gt; на робота.&lt;&#x2F;li&gt;
+&lt;li&gt;На роботе импортируем tar архив обратно в образ.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;Решение железное и супер понятное, но во всем остальном оно ужасно:&lt;&#x2F;p&gt;
+&lt;ul&gt;
+&lt;li&gt;Вы тратите время не только на сборку образа, но и на его экспорт. Экспорт ROS образов у нас занимал 20-30 секунд.&lt;&#x2F;li&gt;
+&lt;li&gt;Нельзя отправить только изменившиеся слои образа, придется каждый раз отправлять ВЕСЬ образ.&lt;&#x2F;li&gt;
+&lt;li&gt;Образы с ROS весят больше гигабайта, и даже архивирование их не спасает. Передача таких тяжелых образов сама по себе будет съедать пару минут времени (я проверял).&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;p&gt;Я реализовал этот способ, понял что он работает ужасно долго и для нас он не подходит. Поэтому тратить буквы на него не буду, сразу перейду к объяснению финального решения.&lt;&#x2F;p&gt;
+&lt;h1 id=&quot;samoe-slozhnoe-reshenie&quot;&gt;Самое сложное решение&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#samoe-slozhnoe-reshenie&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;!-- Тут рассказать сразу про суть текущего решения --&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Если вы повторяете описанные здесь шаги на MacOS, вам нужно знать &lt;a href=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;#mac-os-specific&quot;&gt;кое-что важное&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;Оптимальное решение работает следующим образом:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Собираем образ локально на своем лэптопе&#x2F;ПК&#x2F;микроволновке.&lt;&#x2F;li&gt;
+&lt;li&gt;По SSH запускаем на роботе Docker Registry.&lt;&#x2F;li&gt;
+&lt;li&gt;Поднимаем SSH туннель между вашей машиной и роботом, чтобы Docker Registry робота стал доступен в локальной сети.&lt;&#x2F;li&gt;
+&lt;li&gt;Пушим собранный вами локально образ в Docker Registry, расположенный на роботе.&lt;&#x2F;li&gt;
+&lt;li&gt;Освобождаем неиспользуемые ресурсы.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;Прежде чем проделывать все эти шаги, нужно кое-что настроить на своей машине. Но самое главное — на роботе должен быть установлен Docker, и запускаться он должен без sudo (&lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;engine&#x2F;install&#x2F;linux-postinstall&#x2F;#manage-docker-as-a-non-root-user&quot;&gt;Manage Docker as a non-root user&lt;&#x2F;a&gt;).&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;shag-0-predvaritel-naia-nastroika&quot;&gt;Шаг 0: Предварительная настройка&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-0-predvaritel-naia-nastroika&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;h3 id=&quot;nastraivaem-ssh-kliuchi&quot;&gt;Настраиваем SSH-ключи&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#nastraivaem-ssh-kliuchi&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;!-- Про SSH ключи и почему они нужны --&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Я настоятельно рекомендую один раз выполнить этот пункт, в противном случае работоспособность кода ниже уже будет под вопросом, а удобство использования гарантированно пострадает.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;SSH-ключи, это более безопасная альтернатива паре логин&#x2F;пароль, позволяющая один раз &amp;quot;зарегистрировать&amp;quot; ваш лэптоп в пямяти робота и далее входить с того же устройства уже без ввода пароля. Нормальное объяснение SSH-ключей: &lt;a href=&quot;https:&#x2F;&#x2F;selectel.ru&#x2F;blog&#x2F;ssh-keys&#x2F;&quot;&gt;ТЫК&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h4 id=&quot;proveriaem-chto-kliuch-uzhe-est&quot;&gt;Проверяем что ключ уже есть&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#proveriaem-chto-kliuch-uzhe-est&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h4&gt;
+&lt;p&gt;Проверить, что у вас уже есть SSH-ключ на устройстве, можно при помощи команды ниже:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ls ~&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;&#x2F;.ssh&#x2F;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Если в списке файлов будут &lt;code&gt;id_rsa&lt;&#x2F;code&gt; и &lt;code&gt;id_rsa.pub&lt;&#x2F;code&gt;, новый ключ генерировать не нужно.&lt;&#x2F;p&gt;
+&lt;h4 id=&quot;generiruem-ssh-kliuch&quot;&gt;Генерируем SSH-ключ&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#generiruem-ssh-kliuch&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h4&gt;
+&lt;p&gt;Если у вас еще нет SSH ключа на устройстве, нужно &lt;a href=&quot;https:&#x2F;&#x2F;selectel.ru&#x2F;blog&#x2F;tutorials&#x2F;how-to-generate-ssh&#x2F;&quot;&gt;выпустить новый&lt;&#x2F;a&gt;. Команда для выпуска ключа следующая:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh-keygen -t&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; rsa
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Пароль для SSH-ключа ставить не надо.&lt;&#x2F;p&gt;
+&lt;h4 id=&quot;registriruem-ssh-kliuch-na-robote&quot;&gt;Регистрируем SSH-ключ на роботе&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#registriruem-ssh-kliuch-na-robote&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h4&gt;
+&lt;p&gt;В команде ниже:&lt;&#x2F;p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;user&lt;&#x2F;code&gt; — имя юзера в ОС робота. У нас в RESET имя юзера всегда было &lt;code&gt;nuc&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;li&gt;&lt;code&gt;host&lt;&#x2F;code&gt; — IP-адрес робота в локальной сети, например &lt;code&gt;192.168.1.64&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;p&gt;Код для Linux&#x2F;MacOS:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh-copy-id&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; user@host
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;&lt;a href=&quot;https:&#x2F;&#x2F;chrisjhart.com&#x2F;Windows-10-ssh-copy-id&#x2F;&quot;&gt;Код для Windows Powershell&lt;&#x2F;a&gt; немного отличается:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;powershell&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-powershell &quot;&gt;&lt;code class=&quot;language-powershell&quot; data-lang=&quot;powershell&quot;&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;type &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;$env:USERPROFILE&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\.ssh\id_rsa.pub &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;|&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ssh user&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;@host &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;cat &amp;gt;&amp;gt; .ssh&#x2F;authorized_keys&amp;quot;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;h3 id=&quot;docker-buildkit&quot;&gt;Docker BuildKit&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#docker-buildkit&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;!-- Про то как настроить BuildKit и разрешить пушить в localhost:5000 --&gt;
+&lt;p&gt;&lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;build&#x2F;buildkit&#x2F;&quot;&gt;BuildKit&lt;&#x2F;a&gt; это новый бэкенд для Docker, который нам нужен конкретно из-за своей способности билдить образы под разные архитектуры процессоров.&lt;&#x2F;p&gt;
+&lt;p&gt;Убедитесь что на вашем компе установлен один из трех вариантов софта с BuildKit внутри:&lt;&#x2F;p&gt;
+&lt;ul&gt;
+&lt;li&gt;Docker Desktop — рекомендую ставить именно его и не париться.&lt;&#x2F;li&gt;
+&lt;li&gt;Docker версии 23.0 и выше.&lt;&#x2F;li&gt;
+&lt;li&gt;Старая версия Docker с &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;build&#x2F;buildkit&#x2F;&quot;&gt;установленным BuildKit&lt;&#x2F;a&gt; — хз зачем вам вообще может понадобится эта опция.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;docker-desktop-screenshot.png&quot; alt=&quot;Docker Desktop Screenshot&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h3 id=&quot;sozdanie-i-nastroika-buildkit-builder&quot;&gt;Создание и настройка BuildKit Builder&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#sozdanie-i-nastroika-buildkit-builder&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Builder — Docker контейнер с эмулятором, который умеет собирать Docker образы под разные архитектуры процессоров. Если вы уже установили Docker, то один билдер с именем &lt;code&gt;default&lt;&#x2F;code&gt; у вас уже автоматически создан.&lt;&#x2F;p&gt;
+&lt;p&gt;Нам нужно создать новый билдер и передать в него наш конфиг &lt;code&gt;buildkitd.default.toml&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildx create \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --name&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; eurobot-builder \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --config&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildkitd.default.toml \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --bootstrap --use
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Опция &lt;code&gt;--bootstrap&lt;&#x2F;code&gt; сразу запустит билдер, опция &lt;code&gt;--use&lt;&#x2F;code&gt; сделает его билдером по-умолчанию.&lt;&#x2F;p&gt;
+&lt;p&gt;Заводить свой билдер нужно из-за того, что из коробки Docker не позволяет отправлять образы куда-либо, кроме защищенных цифровой подписью репозиториев в интернетах. В конфиге &lt;code&gt;buildkitd.default.toml&lt;&#x2F;code&gt; разрешаем пушить образы по адресу &lt;code&gt;localhost:5000&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;toml&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-toml &quot;&gt;&lt;code class=&quot;language-toml&quot; data-lang=&quot;toml&quot;&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;[registry.&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;host.docker.internal:5000&amp;quot;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;]
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;http &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;= &lt;&#x2F;span&gt;&lt;span style=&quot;color:#db9d63;&quot;&gt;true
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Вы можете возмутиться: откуда тут &lt;code&gt;host.docker.internal:5000&lt;&#x2F;code&gt;?&lt;&#x2F;p&gt;
+&lt;p&gt;Ответ: билдеры это обычные Docker контейнеры, им недоступна ваша локальная сеть по адресу &lt;code&gt;localhost&lt;&#x2F;code&gt;. Чтобы обойти эту проблему, в Docker есть специальный алиас &lt;code&gt;host.docker.internal&lt;&#x2F;code&gt;, ведущий в &amp;quot;настоящую&amp;quot; локальную сеть вашего компьютера. Про алиас и конкретно наш юзкейс можно почитать подробнее в &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;desktop&#x2F;networking&#x2F;#i-want-to-connect-from-a-container-to-a-service-on-the-host&quot;&gt;документации Docker&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;step-1&quot;&gt;Шаг 1: Собираем образ локально&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#step-1&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Рассказать про нюансы локальной сборки, которые есть при использовании данного метода деплоя --&gt;
+&lt;p&gt;Наконец-то собираем образ. Для этого в директории с &lt;code&gt;Dockerfile&lt;&#x2F;code&gt; запускается примерно вот такой код:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildx build \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --platform&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; linux&#x2F;amd64 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --tag&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; eurobot2023:latest \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --output&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; type=image,push=false \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    .
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Разберем по порядку:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Запускаем билд с помощью &lt;code&gt;docker buildx build&lt;&#x2F;code&gt; — явно сообщаем Docker чтобы он использовал BuildKit.&lt;&#x2F;li&gt;
+&lt;li&gt;Опция &lt;code&gt;--platform&lt;&#x2F;code&gt; определяет, &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;engine&#x2F;reference&#x2F;commandline&#x2F;buildx_build&#x2F;#platform&quot;&gt;под какую архитектуру будет сбилжен образ&lt;&#x2F;a&gt;. Билдить надо под архитектуру компьютера, который установлен на роботе. Например:
+&lt;ul&gt;
+&lt;li&gt;Intel NUC это &lt;code&gt;linux&#x2F;amd64&lt;&#x2F;code&gt;, &lt;&#x2F;li&gt;
+&lt;li&gt;Raspberry Pi 3B+ это &lt;code&gt;linux&#x2F;arm&#x2F;v7&lt;&#x2F;code&gt;, &lt;&#x2F;li&gt;
+&lt;li&gt;Raspberry Pi 4 и Nvidia Jetson Nano это &lt;code&gt;linux&#x2F;arm64&lt;&#x2F;code&gt; и так далее.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;Опция &lt;code&gt;--output&lt;&#x2F;code&gt; позволяет указать, &lt;a href=&quot;https:&#x2F;&#x2F;docs.docker.com&#x2F;engine&#x2F;reference&#x2F;commandline&#x2F;buildx_build&#x2F;#output&quot;&gt;что делать с результатом билда&lt;&#x2F;a&gt;. В нашем случае это &lt;code&gt;type=image,push=false&lt;&#x2F;code&gt; — собираем OCI образ, никуда не пушим, в Docker не экспортируем:
+&lt;ul&gt;
+&lt;li&gt;Не тратится время на экспорт образов в Docker. Так общее время билда сокращается.&lt;&#x2F;li&gt;
+&lt;li&gt;Сбилженные образы хранятся в кэше, их не видно в приложении Docker Desktop или при вызове &lt;code&gt;docker images&lt;&#x2F;code&gt;. Таким образом частый билд не засирает вам список ваших образов.&lt;&#x2F;li&gt;
+&lt;&#x2F;ul&gt;
+&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h2 id=&quot;shag-2-podnimaem-docker-registry-na-robote&quot;&gt;Шаг 2: Поднимаем Docker Registry на роботе&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-2-podnimaem-docker-registry-na-robote&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Объяснить, почему insecure registry на самом деле secure благодаря SSH --&gt;
+&lt;p&gt;Docker Registry дает одно из основных преимуществ подхода — инкрементальную отправку образов. Docker во время отправки общается с Registry и узнает какие слои образов надо отправлять, а какие нет. Нам нужно только подключиться к этому Registry, остальное будет сделано за нас.&lt;&#x2F;p&gt;
+&lt;p&gt;Я использовал примерно вот такой код, для того чтобы через SSH запустить на роботе Registry:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ConnectTimeout=5 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; StrictHostKeyChecking=no \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; UserKnownHostsFile=&#x2F;dev&#x2F;null \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    $&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_HOSTNAME &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        docker run -d &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            -v &#x2F;etc&#x2F;docker-push-ssh&#x2F;registry:&#x2F;var&#x2F;lib&#x2F;registry &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            --name registry &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            --restart always &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            -p 127.0.0.1:5000:5000 &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;            registry:2 || true
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;    &amp;quot;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;blockquote&gt;
+&lt;p&gt;На Windows нет &lt;code&gt;&#x2F;dev&#x2F;null&lt;&#x2F;code&gt;, зато &lt;a href=&quot;https:&#x2F;&#x2F;stackoverflow.com&#x2F;questions&#x2F;67372030&#x2F;how-to-write-to-a-null-device-file-on-windows-10-so-i-can-not-read-back-wh&quot;&gt;есть&lt;&#x2F;a&gt; &lt;code&gt;\\.\NUL&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;Разбираем по порядку:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;Подключаемся по SSH к &lt;code&gt;$ROBOT_HOSTNAME&lt;&#x2F;code&gt;. Это как раз &lt;code&gt;user@host&lt;&#x2F;code&gt; из пункта про SSH-ключи — например &lt;code&gt;nuc@192.168.1.64&lt;&#x2F;code&gt;.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;Опцию &lt;code&gt;-o ConnectTimeout=5&lt;&#x2F;code&gt; вы и сами сможете нагуглить. &lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;Опции &lt;code&gt;-o StrictHostKeyChecking=no&lt;&#x2F;code&gt; и &lt;code&gt;-o UserKnownHostsFile=&#x2F;dev&#x2F;null&lt;&#x2F;code&gt; нужны для &lt;a href=&quot;https:&#x2F;&#x2F;wiki.enchtex.info&#x2F;practice&#x2F;ssh_accept_host_key&quot;&gt;автоматического принятия RSA ключей&lt;&#x2F;a&gt; клиентом SSH. Это сделано для удобства, чтобы вас никто не спрашивал &amp;quot;ДЕЙСТВИТЕЛЬНО ХОТИТЕ ПОДКЛЮЧИТЬСЯ?&amp;quot; и для того чтобы у вас не разрастался файл &lt;code&gt;known_hosts&lt;&#x2F;code&gt; при смене IP адресов роботов.&lt;&#x2F;p&gt;
+&lt;&#x2F;li&gt;
+&lt;li&gt;
+&lt;p&gt;После установки соединения мы просто запускаем на роботе контейнер с Docker Registry. По-умолчанию Registry работает на порте 5000, при помощи биндинга &lt;code&gt;-p 127.0.0.1:5000:5000&lt;&#x2F;code&gt; мы делаем его доступным &lt;a href=&quot;https:&#x2F;&#x2F;brokkr.net&#x2F;2022&#x2F;03&#x2F;29&#x2F;publishing-docker-ports-to-127-0-0-1-instead-of-0-0-0-0&#x2F;&quot;&gt;только в локальной сети&lt;&#x2F;a&gt;. &lt;&#x2F;p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Образ с Registry весит в районе 20 мегабайт и в режиме бездействия не потребляет фактически никаких ресурсов. Так что если он будет все время работать, ничего плохого не произойдет даже на слабых компах типа Raspberry 3B+. Кстати, вместо &lt;code&gt;|| true&lt;&#x2F;code&gt; можно придумать более элегантное решение.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;h2 id=&quot;shag-3-podnimaem-ssh-tunnel-mezhdu-robotom-i-komp-iuterom&quot;&gt;Шаг 3: Поднимаем SSH туннель между роботом и компьютером&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-3-podnimaem-ssh-tunnel-mezhdu-robotom-i-komp-iuterom&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;SSH-туннель нужен для того чтобы сущности, доступные только в локальной сети робота стали доступны в локальной сети вашего компьютера. Если вы играли с друзьями в компик по Hamachi, можете воспринимать SSH-туннель как что-то подобное, &lt;del&gt;но это все-таки другое&lt;&#x2F;del&gt;.&lt;&#x2F;p&gt;
+&lt;p&gt;Используем утилиту SSH:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh -N &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; StrictHostKeyChecking=no \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; UserKnownHostsFile=&#x2F;dev&#x2F;null \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -L &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;*&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;:5000:localhost:5000 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    $&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_HOSTNAME &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;\
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;amp; &lt;&#x2F;span&gt;&lt;span style=&quot;color:#5ebfcc;&quot;&gt;echo &lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;$&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;! &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;&amp;gt;&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; SSHPID
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Разбираем что происходит:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Подключаемся по SSH к &lt;code&gt;$ROBOT_HOSTNAME&lt;&#x2F;code&gt; (к &lt;code&gt;user@host&lt;&#x2F;code&gt;).&lt;&#x2F;li&gt;
+&lt;li&gt;Опция &lt;code&gt;-N&lt;&#x2F;code&gt; позволяет не запускать никакую команду.&lt;&#x2F;li&gt;
+&lt;li&gt;Опция &lt;code&gt;-L *:5000:localhost:5000&lt;&#x2F;code&gt; пробрасывает порты из сети нашего компьютера в локальную сеть робота. Таким образом нам будет доступен Docker Registry, запущенный на роботе.&lt;&#x2F;li&gt;
+&lt;li&gt;Сам запуск ssh блокирует терминал, поэтому используем &lt;code&gt;&amp;amp;&lt;&#x2F;code&gt; чтобы запустить процесс в фоне и сразу записываем ID процесса в файл &lt;code&gt;SSHPID&lt;&#x2F;code&gt; для того чтобы закрыть тоннель после деплоя.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;На Windows, в PowerShell &lt;a href=&quot;https:&#x2F;&#x2F;www.reddit.com&#x2F;r&#x2F;PowerShell&#x2F;comments&#x2F;105e4gc&#x2F;how_to_run_a_process_in_background_in_powershell&#x2F;&quot;&gt;до 7 версии&lt;&#x2F;a&gt;, конструкция &lt;code&gt;&amp;amp; echo $! &amp;gt; SSHPID&lt;&#x2F;code&gt; работать не будет. В рамках туториала можно просто запустить ssh, после чего продолжить работу в новом терминале.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;h3 id=&quot;bonus-proveriaem-chto-vse-rabotaet&quot;&gt;Бонус: проверяем что все работает&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#bonus-proveriaem-chto-vse-rabotaet&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h3&gt;
+&lt;p&gt;Чтобы проверить, что SSH туннель успешно поднят, можно &amp;quot;пингануть&amp;quot; с вашего компьютера Registry на роботе:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;curl -Is&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; http:&#x2F;&#x2F;localhost:5000&#x2F;v2&#x2F;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Что выведет curl в случае успешного поднятия туннеля:&lt;&#x2F;p&gt;
+&lt;pre style=&quot;background-color:#2b303b;color:#6c7079;&quot;&gt;&lt;code&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;HTTP&#x2F;1.1 200 OK
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;Content-Length: 2
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;Content-Type: application&#x2F;json; charset=utf-8
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;Docker-Distribution-Api-Version: registry&#x2F;2.0
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;X-Content-Type-Options: nosniff
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;Date: Mon, 04 Sep 2023 20:02:21 GMT
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Если делать этот запрос в цикле, можно дождаться установки соединения и только потом продолжать деплой.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;shag-4-pushim-obraz-v-docker-registry-na-robote&quot;&gt;Шаг 4: Пушим образ в Docker Registry на роботе&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-4-pushim-obraz-v-docker-registry-na-robote&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;Приступаем к передаче образа на робота. Для этого используем ту же самую команду, что и для билда, но с двумя модификациями: &lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;code&gt;--output type=registry&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;li&gt;&lt;code&gt;--tag host.docker.internal:5000&#x2F;eurobot2023:latest&lt;&#x2F;code&gt;.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;docker&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; buildx build \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --platform&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; linux&#x2F;amd64 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --tag&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; host.docker.internal:5000&#x2F;eurobot2023:latest \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    --output&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; type=registry \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    .
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Так как с момента предыдущего билда в &lt;a href=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;#step-1&quot;&gt;&lt;strong&gt;Шаге 1&lt;&#x2F;strong&gt;&lt;&#x2F;a&gt; ничего не изменилось и все слои из докерфайла уже есть в кэше, стадия билда будет пропущена. Начнется загрузка образа в Docker Registry робота.&lt;&#x2F;p&gt;
+&lt;p&gt;Почему это вообще работает:&lt;&#x2F;p&gt;
+&lt;ol&gt;
+&lt;li&gt;Опция &lt;code&gt;--output type=registry&lt;&#x2F;code&gt; указывает пушить в Registry после сборки образа.&lt;&#x2F;li&gt;
+&lt;li&gt;В тег образа мы добавляем префикс &lt;code&gt;host.docker.internal:5000&#x2F;&lt;&#x2F;code&gt; для того чтобы BuildKit билдер пушил образ в Registry, который доступен из нашей локальной сети. Если указать &lt;code&gt;localhost:5000&#x2F;&lt;&#x2F;code&gt;, то отправка не заработает, ибо &lt;code&gt;localhost&lt;&#x2F;code&gt; внутри контейнера с билдером ведет в &lt;a href=&quot;https:&#x2F;&#x2F;www.youtube.com&#x2F;watch?v=dQw4w9WgXcQ&quot;&gt;совсем другое место&lt;&#x2F;a&gt;.&lt;&#x2F;li&gt;
+&lt;&#x2F;ol&gt;
+&lt;p&gt;На самом роботе надо &amp;quot;стянуть&amp;quot; образ из Registry, чтобы он появился в списке при вызове &lt;code&gt;docker images&lt;&#x2F;code&gt; и после этого вернуть ему нормальное имя. Это мы тоже делаем через SSH:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ssh -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; ConnectTimeout=5 \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; StrictHostKeyChecking=no \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;    -o&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; UserKnownHostsFile=&#x2F;dev&#x2F;null \
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt;    $&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;ROBOT_HOSTNAME &lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;&amp;quot;
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        docker pull localhost:5000&#x2F;eurobot2023:latest &amp;amp;&amp;amp; \ 
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;        docker tag localhost:5000&#x2F;eurobot2023:latest eurobot2023:latest
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#9acc76;&quot;&gt;    &amp;quot;
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;И на этом деплой закончился, образ &lt;code&gt;eurobot2023:latest&lt;&#x2F;code&gt; уже на роботе и готов к запуску.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;shag-5-chistim-za-soboi&quot;&gt;Шаг 5: Чистим за собой&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#shag-5-chistim-za-soboi&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;Чтобы остановить SSH-туннель, можно просто убить процесс ssh. Для этого ранее мы запоминали его PID в файл &lt;code&gt;SSHPID&lt;&#x2F;code&gt;:&lt;&#x2F;p&gt;
+&lt;pre data-lang=&quot;bash&quot; style=&quot;background-color:#2b303b;color:#6c7079;&quot; class=&quot;language-bash &quot;&gt;&lt;code class=&quot;language-bash&quot; data-lang=&quot;bash&quot;&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;cat&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; SSHPID &lt;&#x2F;span&gt;&lt;span style=&quot;color:#adb7c9;&quot;&gt;| &lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;xargs&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; kill
+&lt;&#x2F;span&gt;&lt;span style=&quot;color:#eb6772;&quot;&gt;rm&lt;&#x2F;span&gt;&lt;span style=&quot;color:#abb2bf;&quot;&gt; SSHPID &lt;&#x2F;span&gt;&lt;span style=&quot;font-style:italic;color:#5f697a;&quot;&gt;# не забываем удалить временный файл тоже
+&lt;&#x2F;span&gt;&lt;&#x2F;code&gt;&lt;&#x2F;pre&gt;
+&lt;p&gt;Останавливать Docker Registry на роботе, как я уже писал, смысла большого нет. Дешевле по времени и вычислительным ресурсам просто оставить его работать. Есть еще одна причина не трогать его — если вы работаете в команде и одновременно льете образы на робота, вы можете нечаянно завершить Registry пока кто-то другой передает образ. &lt;&#x2F;p&gt;
+&lt;h1 id=&quot;podvodnye-kamni&quot;&gt;Подводные камни&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#podvodnye-kamni&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;h2 id=&quot;mac-os-specific&quot;&gt;Комментарий по поводу Mac OS&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#mac-os-specific&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;На Mac OS нельзя просто так взять и пробросить SSH-туннель для порта 5000. Все потому что служба AirPlay тоже использует этот порт.&lt;&#x2F;p&gt;
+&lt;p&gt;Если хотите чтобы описанный здесь код заработал на вашем яблочном компьютере, &lt;a href=&quot;https:&#x2F;&#x2F;habr.com&#x2F;ru&#x2F;news&#x2F;591087&#x2F;&quot;&gt;отключите службу AirPlay&lt;&#x2F;a&gt;, либо поменяйте во всех скриптах из этого поста порт 5000 на другой, например на 5001.&lt;&#x2F;p&gt;
+&lt;h2 id=&quot;raskhod-mesta-na-diske&quot;&gt;Расход места на диске&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#raskhod-mesta-na-diske&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;p&gt;Через какое-то время активной работы у вас на устройстве и на роботе начнут скапливаться груды ненужных слоев от Docker образов. Не забывайте их чистить.&lt;&#x2F;p&gt;
+&lt;center&gt;
+&lt;p&gt;&lt;img src=&quot;https:&#x2F;&#x2F;tonykolomeytsev.github.io&#x2F;posts&#x2F;deploy-to-robots-with-docker&#x2F;pile-of-containers.jpg&quot; alt=&quot;Pile Of Docker Containers&quot; &#x2F;&gt;&lt;&#x2F;p&gt;
+&lt;p&gt;&lt;em&gt;Извините за картинку из Midjourney, я не удержался&lt;&#x2F;em&gt;&lt;&#x2F;p&gt;
+&lt;&#x2F;center&gt;
+&lt;h2 id=&quot;etot-protsess-nuzhdaetsia-v-avtomatizatsii&quot;&gt;Этот процесс нуждается в автоматизации&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#etot-protsess-nuzhdaetsia-v-avtomatizatsii&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h2&gt;
+&lt;!-- Еще раз напомнить что это лучше не делать руками, рассказать про Bazel в очередной раз --&gt;
+&lt;p&gt;Во время подготовки к соревнованиям мы не запускали все эти шаги руками. Мы пользовались мета билд системой bldr, которая упрощала процесс, скрывая кишки с докером внутри себя.&lt;&#x2F;p&gt;
+&lt;p&gt;В целом, чтобы автоматизировать все шаги для простого проекта, достаточно и обыкновенных sh скриптов. Если работать в сложном монорепозитории, лучше для подобных затей использовать &lt;a href=&quot;https:&#x2F;&#x2F;bazel.build&#x2F;&quot;&gt;Bazel&lt;&#x2F;a&gt;.&lt;&#x2F;p&gt;
+&lt;h1 id=&quot;mysli-naposledok&quot;&gt;Мысли напоследок&lt;a class=&quot;anchor&quot; aria-hidden=&quot;true&quot; href=&quot;#mysli-naposledok&quot; hidden=&quot;&quot;&gt;#&lt;&#x2F;a&gt;
+&lt;&#x2F;h1&gt;
+&lt;p&gt;В команде RESET до последнего момента SSH туннель запускался немного иначе — в виде Docker контейнера с утилитой ssh внутри. Это негативно сказывалось на скорости установки и сброса соединения, но зато было удобно останавливать туннель, просто останавливая Docker контейнер. А еще не надо было использовать хак с &lt;code&gt;host.docker.internal&lt;&#x2F;code&gt; для доступа к SSH туннелю внутри Docker сети. Но настраивать такую конфигурацию сложнее, поэтому специально для этого поста я немного допилил нашу реализацию.&lt;&#x2F;p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Чем больше я ковырялся c bldr, тем больше хотелось переписать все на Bazel и опубликовать на GitHub. Так любые робототехнические команды могли бы использовать все наработки.&lt;&#x2F;p&gt;
+&lt;&#x2F;blockquote&gt;
+&lt;p&gt;Деплой по локальной сети сэкономил нам кучу человекочасов во время подготовки к соревнованиям. Но на то чтобы разобраться, как все правильно настроить и автоматизировать, у меня ушло несколько недель. Этот гайд поможет избежать подобных жертв)))&lt;&#x2F;p&gt;
+</content>
+        
+    </entry>
+</feed>
